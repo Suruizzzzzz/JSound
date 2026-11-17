@@ -1,0 +1,116 @@
+import React, { useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Image,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Track } from '@/types/music';
+import { usePlayerStore } from '@/store/playerStore';
+import { useThemeStore } from '@/store/themeStore';
+import ConfirmModal from '@/components/ConfirmModal';
+import { createStyles } from './TrackItem.styles';
+
+interface TrackItemProps {
+  track: Track;
+  queue: Track[];
+  onDelete?: (id: string) => void;
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+export default function TrackItem({ track, queue, onDelete }: TrackItemProps) {
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const playTrack = usePlayerStore((state) => state.playTrack);
+  const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
+  const theme = useThemeStore((state) => state.theme);
+
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const isCurrent = currentTrack?.id === track.id;
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+  const handlePress = () => {
+    if (isCurrent) {
+      togglePlayPause();
+    } else {
+      playTrack(track, queue);
+    }
+  };
+
+  return (
+    <TouchableOpacity
+      style={[styles.container, isCurrent && styles.activeContainer]}
+      activeOpacity={0.7}
+      onPress={handlePress}
+    >
+      {/* Artwork Thumbnail / Minimalist Monochrome Placeholder */}
+      <View style={styles.artworkContainer}>
+        {track.local_artwork_uri ? (
+          <Image source={{ uri: track.local_artwork_uri }} style={styles.artwork} />
+        ) : (
+          <View style={styles.placeholder}>
+            <Ionicons
+              name={isCurrent && isPlaying ? 'volume-high' : 'musical-note'}
+              size={18}
+              color={isCurrent ? theme.primary : theme.textSecondary}
+            />
+          </View>
+        )}
+      </View>
+
+      {/* Title & Artist info */}
+      <View style={styles.info}>
+        <Text
+          style={[styles.title, isCurrent && styles.activeTitle]}
+          numberOfLines={1}
+        >
+          {track.title}
+        </Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.artist} numberOfLines={1}>
+            {track.artist}
+          </Text>
+          <Text style={styles.metaDot}>•</Text>
+          <Text style={styles.duration}>
+            {formatDuration(track.duration)}
+          </Text>
+        </View>
+      </View>
+
+      {/* Optional action / delete button with ConfirmModal */}
+      {onDelete && (
+        <>
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => setShowDeleteModal(true)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="trash-outline" size={17} color={theme.textMuted} />
+          </TouchableOpacity>
+
+          <ConfirmModal
+            visible={showDeleteModal}
+            title="Delete Track"
+            message={`Are you sure you want to remove "${track.title}" from your offline library?`}
+            icon="trash-outline"
+            confirmText="Delete"
+            isDestructive={true}
+            onConfirm={() => {
+              setShowDeleteModal(false);
+              onDelete(track.id);
+            }}
+            onCancel={() => setShowDeleteModal(false)}
+          />
+        </>
+      )}
+    </TouchableOpacity>
+  );
+}

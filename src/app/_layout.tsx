@@ -1,18 +1,57 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { View } from 'react-native';
+import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { initDatabase } from '@/lib/database';
+import { getAllTracks } from '@/repositories/trackRepository';
+import { usePlayerStore } from '@/store/playerStore';
+import { useThemeStore } from '@/store/themeStore';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
-SplashScreen.preventAutoHideAsync();
+export default function RootLayout() {
+  const [isReady, setIsReady] = useState(false);
+  const setTracks = usePlayerStore((state) => state.setTracks);
+  const mode = useThemeStore((state) => state.mode);
+  const initTheme = useThemeStore((state) => state.initTheme);
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  useEffect(() => {
+    async function prepare() {
+      try {
+        // Initialize SQLite Database schema
+        await initDatabase();
+
+        // Load saved theme preference
+        await initTheme();
+
+        // Preload stored tracks into Zustand store
+        const tracks = await getAllTracks();
+        setTracks(tracks);
+      } catch (e) {
+        console.warn('Initialization error:', e);
+      } finally {
+        setIsReady(true);
+        await SplashScreen.hideAsync().catch(() => {});
+      }
+    }
+
+    prepare();
+  }, [setTracks, initTheme]);
+
+  if (!isReady) {
+    return null;
+  }
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <View style={{ flex: 1 }}>
+      <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="auth" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="settings" />
+      </Stack>
+    </View>
   );
 }

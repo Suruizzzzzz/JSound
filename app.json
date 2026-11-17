@@ -4,7 +4,7 @@
     "slug": "JSound",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo-dark.png",
     "scheme": "jsound",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -12,28 +12,45 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundColor": "#141414",
+        "foregroundImage": "./assets/images/logo-dark.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": [
+        "READ_MEDIA_AUDIO",
+        "READ_EXTERNAL_STORAGE"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "server",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/logo-dark.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
+          "backgroundColor": "#141414",
+          "image": "./assets/images/logo-dark.png",
           "imageWidth": 76
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-media-library",
+        {
+          "granularPermissions": ["audio"]
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true
+        }
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,
