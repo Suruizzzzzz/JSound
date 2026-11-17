@@ -69,7 +69,7 @@ export default function AuthScreen() {
     try {
       // Simulate backend sign in / registration
       await new Promise((resolve) => setTimeout(resolve, 500));
-      const targetEmail = email.trim() || (authMode === 'login' ? 'member@jsound.app' : 'newuser@jsound.app');
+      const targetEmail = email.trim() || (authMode === 'login' ? 'member@jstream.app' : 'newuser@jstream.app');
       await signInWithEmail(targetEmail);
       await setSetting('has_seen_welcome', 'true');
       router.replace('/(tabs)');
@@ -139,14 +139,6 @@ export default function AuthScreen() {
           >
             <Ionicons name="chevron-back" size={22} color={theme.textPrimary} />
           </TouchableOpacity>
-
-          <Image
-            source={logoSource}
-            style={styles.headerLogo}
-            resizeMode="contain"
-          />
-
-          <View style={styles.headerPlaceholder} />
         </View>
 
         {/* Dynamic Heading */}
@@ -157,7 +149,7 @@ export default function AuthScreen() {
           <Text style={styles.headingSubtitle}>
             {authMode === 'login'
               ? 'Sign in to synchronize your offline tracks and playlists'
-              : 'Join JSound for seamless cloud sync & backup'}
+              : 'Join JStream for seamless cloud sync & backup'}
           </Text>
         </View>
 

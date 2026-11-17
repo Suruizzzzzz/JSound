@@ -308,7 +308,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* Footer */}
-        <Text style={styles.footerText}>JSound v1.0.0 • Pure Audio</Text>
+        <Text style={styles.footerText}>JStream v1.0.0 • Personal Music</Text>
       </ScrollView>
 
       {/* Clear Library Confirmation Modal */}

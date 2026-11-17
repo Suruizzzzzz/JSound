@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "JSound",
-    "slug": "JSound",
+    "name": "JStream",
+    "slug": "jstream",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/logo-dark.png",
-    "scheme": "jsound",
+    "scheme": "jstream",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon"

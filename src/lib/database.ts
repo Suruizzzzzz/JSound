@@ -4,7 +4,7 @@ let dbInstance: SQLite.SQLiteDatabase | null = null;
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync('jsound.db');
+    dbInstance = await SQLite.openDatabaseAsync('jstream.db');
   }
   return dbInstance;
 }

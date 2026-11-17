@@ -28,7 +28,6 @@ export const createStyles = (theme: ThemeColors) =>
     headerTop: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
       paddingHorizontal: 16,
       paddingTop: 8,
       paddingBottom: 4,
@@ -42,14 +41,6 @@ export const createStyles = (theme: ThemeColors) =>
       borderWidth: 1,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    headerLogo: {
-      width: 56,
-      height: 56,
-    },
-    headerPlaceholder: {
-      width: 38,
-      height: 38,
     },
     headingSection: {
       alignItems: 'center',

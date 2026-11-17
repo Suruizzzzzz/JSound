@@ -124,8 +124,8 @@ export default function LibraryScreen() {
             resizeMode="contain"
           />
           <View>
-            <Text style={styles.appTitle}>JSound</Text>
-            <Text style={styles.appTagline}>PURE AUDIO</Text>
+            <Text style={styles.appTitle}>JStream</Text>
+            <Text style={styles.appTagline}>PERSONAL MUSIC</Text>
           </View>
         </View>
 

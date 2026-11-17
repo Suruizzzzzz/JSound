@@ -31,8 +31,6 @@ export default function WelcomeScreen() {
   );
 
   // Entrance animation values
-  const [logoOpacity] = useState(() => new Animated.Value(0));
-  const [logoScale] = useState(() => new Animated.Value(0.88));
   const [textTranslate] = useState(() => new Animated.Value(18));
   const [textOpacity] = useState(() => new Animated.Value(0));
   const [actionsTranslate] = useState(() => new Animated.Value(24));
@@ -49,26 +47,14 @@ export default function WelcomeScreen() {
     // 1. Entrance sequence
     Animated.sequence([
       Animated.parallel([
-        Animated.timing(logoOpacity, {
-          toValue: 1,
-          duration: 650,
-          useNativeDriver: true,
-        }),
-        Animated.timing(logoScale, {
-          toValue: 1,
-          duration: 650,
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
         Animated.timing(textTranslate, {
           toValue: 0,
-          duration: 500,
+          duration: 550,
           useNativeDriver: true,
         }),
         Animated.timing(textOpacity, {
           toValue: 1,
-          duration: 500,
+          duration: 550,
           useNativeDriver: true,
         }),
       ]),
@@ -124,8 +110,6 @@ export default function WelcomeScreen() {
       l5.stop();
     };
   }, [
-    logoOpacity,
-    logoScale,
     textTranslate,
     textOpacity,
     actionsTranslate,
@@ -166,23 +150,6 @@ export default function WelcomeScreen() {
 
       {/* Center Hero Area */}
       <View style={styles.contentWrapper}>
-        {/* Animated Logo Entrance */}
-        <Animated.View
-          style={[
-            styles.logoSection,
-            {
-              opacity: logoOpacity,
-              transform: [{ scale: logoScale }],
-            },
-          ]}
-        >
-          <Image
-            source={logoSource}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-        </Animated.View>
-
         {/* Minimalist Animated 5-Bar Soundwave / Equalizer */}
         <View style={styles.soundwaveContainer}>
           <Animated.View
@@ -227,8 +194,8 @@ export default function WelcomeScreen() {
             },
           ]}
         >
-          <Text style={styles.title}>JSound</Text>
-          <Text style={styles.subtitle}>PURE AUDIO</Text>
+          <Text style={styles.title}>JStream</Text>
+          <Text style={styles.subtitle}>PERSONAL MUSIC</Text>
           <Text style={styles.tagline}>
             &ldquo;Your music, offline-first and unbound.&rdquo;
           </Text>

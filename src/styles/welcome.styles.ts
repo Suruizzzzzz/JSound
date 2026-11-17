@@ -30,16 +30,7 @@ export const createStyles = (theme: ThemeColors) =>
       justifyContent: 'center',
       alignItems: 'center',
       paddingHorizontal: 28,
-      paddingTop: height * 0.06,
-    },
-    logoSection: {
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginBottom: 24,
-    },
-    logoImage: {
-      width: 110,
-      height: 110,
+      paddingTop: height * 0.04,
     },
     soundwaveContainer: {
       flexDirection: 'row',

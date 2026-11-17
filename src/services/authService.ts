@@ -13,7 +13,7 @@ export interface UserProfile {
 const GUEST_USER: UserProfile = {
   id: 'local_guest',
   name: 'Local Guest',
-  email: 'guest@jsound.offline',
+  email: 'guest@jstream.offline',
   avatar_url: null,
   is_logged_in: false,
   sync_status: 'offline',
@@ -45,7 +45,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({
       user: {
         id: 'user_google_demo',
-        name: 'JSound Member',
+        name: 'JStream Member',
         email: 'member@gmail.com',
         avatar_url: null,
         is_logged_in: true,
