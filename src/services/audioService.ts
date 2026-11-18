@@ -18,9 +18,11 @@ let currentStatusCallback: ((status: AudioStatus) => void) | null = null;
 let isAudioModeConfigured = false;
 let shouldAutoPlay = true;
 
-// Native foreground AudioControlsService binding is only registered in standalone/preview APK builds.
-// In Expo Go (storeClient), attempting to start or bind background playback services triggers a LogBox error.
-const isStandalone = Constants.executionEnvironment === ExecutionEnvironment.Standalone;
+// Native foreground AudioControlsService binding is enabled by default in all compiled/standalone builds.
+// Only skip when explicitly running inside Expo Go client where background service bindings trigger LogBox errors.
+const isExpoGo =
+  Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+  Constants.appOwnership === 'expo';
 
 const DEFAULT_LOCK_SCREEN_OPTIONS: AudioLockScreenOptions = {
   showNextTrack: true,
@@ -36,13 +38,13 @@ export async function ensureAudioMode(): Promise<void> {
   try {
     await setAudioModeAsync({
       playsInSilentMode: true,
-      shouldPlayInBackground: isStandalone,
+      shouldPlayInBackground: !isExpoGo,
       interruptionMode: 'doNotMix',
     });
     isAudioModeConfigured = true;
 
     // Request notification permission for Android 13+ lock screen and shade controls in standalone builds
-    if (isStandalone) {
+    if (!isExpoGo) {
       try {
         await requestNotificationPermissionsAsync();
       } catch (permErr) {
@@ -103,22 +105,26 @@ export async function loadAndPlayAudio(
         // Reuse existing player with .replace()
         playerInstance.replace(source);
 
-        // Update system lock screen & media notification metadata (standalone builds only)
-        if (isStandalone && metadata) {
+        // Update system lock screen & media notification metadata unless in Expo Go
+        if (!isExpoGo && metadata) {
           try {
-            if (typeof playerInstance.updateLockScreenMetadata === 'function') {
+            if (typeof playerInstance.setActiveForLockScreen === 'function') {
+              const res: any = (playerInstance as any).setActiveForLockScreen(
+                true,
+                metadata,
+                DEFAULT_LOCK_SCREEN_OPTIONS
+              );
+              if (res && typeof res.catch === 'function') {
+                res.catch(() => {});
+              }
+            } else if (typeof playerInstance.updateLockScreenMetadata === 'function') {
               const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
               if (res && typeof res.catch === 'function') {
                 res.catch(() => {});
               }
-            } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
-              const res: any = (playerInstance as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
-              if (res && typeof res.catch === 'function') {
-                res.catch(() => {});
-              }
             }
-          } catch {
-            // Suppress in Expo Go or environments without service binding
+          } catch (lockErr) {
+            console.warn('[AudioService] Failed to update lock screen on replace:', lockErr);
           }
         }
 
@@ -138,18 +144,25 @@ export async function loadAndPlayAudio(
     // Safely release previous player to prevent memory leaks and audio crashes
     await stopAndUnloadAudio();
 
-    const player = createAudioPlayer(source, { updateInterval: 250 });
+    const player = createAudioPlayer(source, {
+      updateInterval: 250,
+      keepAudioSessionActive: true,
+    });
     playerInstance = player;
 
-    // Enable system media notification and lock screen controls (standalone builds only)
-    if (isStandalone && metadata && typeof player.setActiveForLockScreen === 'function') {
+    // Enable system media notification and lock screen controls unless in Expo Go
+    if (!isExpoGo && metadata && typeof player.setActiveForLockScreen === 'function') {
       try {
-        const res: any = (player as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+        const res: any = (player as any).setActiveForLockScreen(
+          true,
+          metadata,
+          DEFAULT_LOCK_SCREEN_OPTIONS
+        );
         if (res && typeof res.catch === 'function') {
           res.catch(() => {});
         }
-      } catch {
-        // Suppress in Expo Go
+      } catch (lockErr) {
+        console.warn('[AudioService] Failed to activate lock screen controls:', lockErr);
       }
     }
 
@@ -235,8 +248,8 @@ export async function stopAndUnloadAudio(): Promise<void> {
       // ignore
     }
 
-    // Dismiss system media notification and lock screen controls in standalone builds
-    if (isStandalone) {
+    // Dismiss system media notification and lock screen controls unless in Expo Go
+    if (!isExpoGo) {
       try {
         if (typeof playerToRelease.clearLockScreenControls === 'function') {
           const res: any = (playerToRelease as any).clearLockScreenControls();
@@ -267,15 +280,19 @@ export async function stopAndUnloadAudio(): Promise<void> {
 }
 
 export function updateAudioMetadata(metadata: AudioMetadata): void {
-  if (!isStandalone || !playerInstance) return;
+  if (isExpoGo || !playerInstance) return;
   try {
-    if (typeof playerInstance.updateLockScreenMetadata === 'function') {
-      const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
+    if (typeof playerInstance.setActiveForLockScreen === 'function') {
+      const res: any = (playerInstance as any).setActiveForLockScreen(
+        true,
+        metadata,
+        DEFAULT_LOCK_SCREEN_OPTIONS
+      );
       if (res && typeof res.catch === 'function') {
         res.catch(() => {});
       }
-    } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
-      const res: any = (playerInstance as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+    } else if (typeof playerInstance.updateLockScreenMetadata === 'function') {
+      const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
       if (res && typeof res.catch === 'function') {
         res.catch(() => {});
       }

@@ -4,6 +4,8 @@ import { View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { requestNotificationPermissionsAsync } from 'expo-audio';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { initDatabase, getSetting } from '@/lib/database';
 import { getAllTracks } from '@/repositories/trackRepository';
 import { usePlayerStore } from '@/store/playerStore';
@@ -35,6 +37,18 @@ export default function RootLayout() {
         // Preload stored tracks into Zustand store
         const tracks = await getAllTracks();
         setTracks(tracks);
+
+        // Request notification permission on Android 13+ for lock screen media notification controls
+        const isExpoGo =
+          Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+          Constants.appOwnership === 'expo';
+        if (!isExpoGo) {
+          try {
+            await requestNotificationPermissionsAsync();
+          } catch (permErr) {
+            console.warn('Failed to request notification permission:', permErr);
+          }
+        }
 
         // Check if user has already seen onboarding
         const seenWelcome = await getSetting('has_seen_welcome');
