@@ -11,7 +11,7 @@ import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/services/authService';
-import { setSetting } from '@/lib/database';
+import { setSetting, getSetting } from '@/lib/database';
 import { createStyles } from '@/styles/welcome.styles';
 
 export default function WelcomeScreen() {
@@ -121,8 +121,29 @@ export default function WelcomeScreen() {
     bar5,
   ]);
 
-  const handleGetStarted = () => {
-    router.push('/auth');
+  // Check if user has already seen onboarding; if so, skip directly to player tabs
+  useEffect(() => {
+    async function checkExistingWelcome() {
+      try {
+        const seen = await getSetting('has_seen_welcome');
+        if (seen === 'true') {
+          router.replace('/(tabs)');
+        }
+      } catch (err) {
+        console.warn('Welcome check error:', err);
+      }
+    }
+    checkExistingWelcome();
+  }, [router]);
+
+  const handleGetStarted = async () => {
+    setGuestSession(true);
+    try {
+      await setSetting('has_seen_welcome', 'true');
+    } catch (e) {
+      console.warn('Error setting welcome status:', e);
+    }
+    router.replace('/(tabs)');
   };
 
   const handleContinueGuest = async () => {
@@ -133,6 +154,10 @@ export default function WelcomeScreen() {
       console.warn('Error setting welcome status:', e);
     }
     router.replace('/(tabs)');
+  };
+
+  const handleSignIn = () => {
+    router.push('/auth');
   };
 
   return (
@@ -226,6 +251,14 @@ export default function WelcomeScreen() {
           activeOpacity={0.8}
         >
           <Text style={styles.secondaryButtonText}>Continue Offline (Guest)</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.textLinkButton}
+          onPress={handleSignIn}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.textLinkText}>Already have an account? Sign In</Text>
         </TouchableOpacity>
       </Animated.View>
     </SafeAreaView>

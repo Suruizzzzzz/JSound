@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
+import { setSetting } from '@/lib/database';
 import ConfirmModal from '@/components/ConfirmModal';
 import { createStyles } from '@/styles/profile.styles';
 
@@ -70,6 +71,11 @@ export default function ProfileScreen() {
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
     await signOut();
+    try {
+      await setSetting('has_seen_welcome', 'false');
+    } catch {
+      // ignore
+    }
     router.replace('/');
   };
 

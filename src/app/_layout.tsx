@@ -1,10 +1,10 @@
 import 'react-native-url-polyfill/auto';
 import React, { useEffect, useState } from 'react';
 import { View } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { initDatabase } from '@/lib/database';
+import { initDatabase, getSetting } from '@/lib/database';
 import { getAllTracks } from '@/repositories/trackRepository';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
@@ -12,7 +12,9 @@ import { useThemeStore } from '@/store/themeStore';
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
+  const router = useRouter();
   const [isReady, setIsReady] = useState(false);
+  const [shouldRedirectToTabs, setShouldRedirectToTabs] = useState(false);
   const setTracks = usePlayerStore((state) => state.setTracks);
   const mode = useThemeStore((state) => state.mode);
   const initTheme = useThemeStore((state) => state.initTheme);
@@ -29,6 +31,12 @@ export default function RootLayout() {
         // Preload stored tracks into Zustand store
         const tracks = await getAllTracks();
         setTracks(tracks);
+
+        // Check if user has already seen onboarding
+        const seenWelcome = await getSetting('has_seen_welcome');
+        if (seenWelcome === 'true') {
+          setShouldRedirectToTabs(true);
+        }
       } catch (e) {
         console.warn('Initialization error:', e);
       } finally {
@@ -39,6 +47,12 @@ export default function RootLayout() {
 
     prepare();
   }, [setTracks, initTheme]);
+
+  useEffect(() => {
+    if (isReady && shouldRedirectToTabs) {
+      router.replace('/(tabs)');
+    }
+  }, [isReady, shouldRedirectToTabs, router]);
 
   if (!isReady) {
     return null;

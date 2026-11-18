@@ -117,4 +117,15 @@ export const createStyles = (theme: ThemeColors) =>
       color: theme.textPrimary,
       letterSpacing: 0.2,
     },
+    textLinkButton: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 8,
+      marginTop: 2,
+    },
+    textLinkText: {
+      fontSize: 13,
+      fontWeight: '500',
+      color: theme.textSecondary,
+    },
   });

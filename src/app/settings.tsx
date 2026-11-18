@@ -1,4 +1,5 @@
 import ConfirmModal from "@/components/ConfirmModal";
+import { setSetting } from "@/lib/database";
 import { clearAllTracks as clearDbTracks } from "@/repositories/trackRepository";
 import { useAuthStore } from "@/services/authService";
 import { pickAndImportAudioFiles } from "@/services/localScannerService";
@@ -76,6 +77,11 @@ export default function SettingsScreen() {
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
     await signOut();
+    try {
+      await setSetting('has_seen_welcome', 'false');
+    } catch {
+      // ignore
+    }
     router.replace("/");
   };
 
