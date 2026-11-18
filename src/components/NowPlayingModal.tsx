@@ -5,8 +5,8 @@ import {
   Text,
   TouchableOpacity,
   Image,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
@@ -129,8 +129,14 @@ export default function NowPlayingModal() {
 
           <View style={styles.badgeContainer}>
             <View style={styles.sourceBadge}>
-              <Ionicons name="folder-outline" size={13} color={theme.textSecondary} />
-              <Text style={styles.sourceBadgeText}>Local</Text>
+              <Ionicons
+                name={currentTrack.is_streaming ? 'globe-outline' : 'folder-outline'}
+                size={13}
+                color={theme.textSecondary}
+              />
+              <Text style={styles.sourceBadgeText}>
+                {currentTrack.is_streaming ? 'Stream' : 'Local'}
+              </Text>
             </View>
           </View>
         </View>

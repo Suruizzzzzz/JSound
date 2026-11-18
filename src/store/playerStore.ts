@@ -108,23 +108,34 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrack: track,
       queue: resolvedQueue,
       isLoading: true,
+      isPlaying: true, // Auto-play: proactively activate playing state
       position: 0,
       duration: track.duration || 0,
     });
 
     try {
-      await loadAndPlayAudio(track.local_audio_uri, (status) => {
+      const audioSource = track.headers
+        ? { uri: track.local_audio_uri, headers: track.headers }
+        : track.local_audio_uri;
+
+      await loadAndPlayAudio(audioSource, (status) => {
         const position = status.currentTime ?? 0;
         const duration = status.duration > 0 ? status.duration : (track.duration || 0);
 
-        set({
-          isPlaying: status.playing,
-          isLoading: false,
+        // While buffering or loading stream, do not flip isPlaying to false prematurely
+        const isBuffering =
+          status.isBuffering ||
+          status.timeControlStatus === 'waiting' ||
+          !status.isLoaded;
+
+        set((prevState) => ({
+          isPlaying: isBuffering ? true : status.playing,
+          isLoading: isBuffering,
           position,
           duration,
-        });
+        }));
 
-        if (status.didJustFinish) {
+        if (status.didJustFinish && (position > 1 || (duration > 0 && position >= duration - 1.5))) {
           const currentRepeat = get().repeatMode;
           const autoPlay = get().autoPlay;
           if (currentRepeat === 'one') {

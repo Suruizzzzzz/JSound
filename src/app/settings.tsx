@@ -1,22 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import ConfirmModal from "@/components/ConfirmModal";
+import { clearAllTracks as clearDbTracks } from "@/repositories/trackRepository";
+import { useAuthStore } from "@/services/authService";
+import { pickAndImportAudioFiles } from "@/services/localScannerService";
+import { usePlayerStore } from "@/store/playerStore";
+import { useThemeStore } from "@/store/themeStore";
+import { createStyles } from "@/styles/settings.styles";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useMemo, useState } from "react";
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Switch,
   Image,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { useThemeStore } from '@/store/themeStore';
-import { usePlayerStore } from '@/store/playerStore';
-import { useAuthStore } from '@/services/authService';
-import { pickAndImportAudioFiles } from '@/services/localScannerService';
-import { clearAllTracks as clearDbTracks } from '@/repositories/trackRepository';
-import ConfirmModal from '@/components/ConfirmModal';
-import { createStyles } from '@/styles/settings.styles';
+  ScrollView,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -42,20 +42,22 @@ export default function SettingsScreen() {
   // Theme-adaptive watermark
   const logoSource = useMemo(
     () =>
-      mode === 'dark'
-        ? require('@/assets/images/logo-dark.png')
-        : require('@/assets/images/logo-light.png'),
-    [mode]
+      mode === "dark"
+        ? require("@/assets/images/logo-dark.png")
+        : require("@/assets/images/logo-light.png"),
+    [mode],
   );
 
   const handleImport = async () => {
     try {
       const imported = await pickAndImportAudioFiles();
       setTracks(imported);
-      setImportStatus(`Imported ${imported.length} track${imported.length === 1 ? '' : 's'}`);
+      setImportStatus(
+        `Imported ${imported.length} track${imported.length === 1 ? "" : "s"}`,
+      );
       setTimeout(() => setImportStatus(null), 3000);
     } catch (e: any) {
-      console.warn('Import error in settings:', e);
+      console.warn("Import error in settings:", e);
     }
   };
 
@@ -64,21 +66,21 @@ export default function SettingsScreen() {
     try {
       await clearDbTracks();
       await clearStoreTracks();
-      setImportStatus('Library cleared');
+      setImportStatus("Library cleared");
       setTimeout(() => setImportStatus(null), 3000);
     } catch (e) {
-      console.warn('Error clearing library:', e);
+      console.warn("Error clearing library:", e);
     }
   };
 
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
     await signOut();
-    router.replace('/');
+    router.replace("/");
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
       {/* Subtle Background Watermark */}
       <View style={styles.watermarkContainer} pointerEvents="none">
         <Image
@@ -115,7 +117,7 @@ export default function SettingsScreen() {
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
                 <Ionicons
-                  name={mode === 'dark' ? 'moon-outline' : 'sunny-outline'}
+                  name={mode === "dark" ? "moon-outline" : "sunny-outline"}
                   size={18}
                   color={theme.textPrimary}
                 />
@@ -130,15 +132,15 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 style={[
                   styles.themeSegmentButton,
-                  mode === 'light' && styles.themeSegmentActive,
+                  mode === "light" && styles.themeSegmentActive,
                 ]}
-                onPress={() => setThemeMode('light')}
+                onPress={() => setThemeMode("light")}
                 activeOpacity={0.8}
               >
                 <Text
                   style={[
                     styles.themeSegmentText,
-                    mode === 'light' && styles.themeSegmentTextActive,
+                    mode === "light" && styles.themeSegmentTextActive,
                   ]}
                 >
                   Light
@@ -148,15 +150,15 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 style={[
                   styles.themeSegmentButton,
-                  mode === 'dark' && styles.themeSegmentActive,
+                  mode === "dark" && styles.themeSegmentActive,
                 ]}
-                onPress={() => setThemeMode('dark')}
+                onPress={() => setThemeMode("dark")}
                 activeOpacity={0.8}
               >
                 <Text
                   style={[
                     styles.themeSegmentText,
-                    mode === 'dark' && styles.themeSegmentTextActive,
+                    mode === "dark" && styles.themeSegmentTextActive,
                   ]}
                 >
                   Dark
@@ -176,11 +178,17 @@ export default function SettingsScreen() {
           <View style={styles.row}>
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons name="play-skip-forward-outline" size={17} color={theme.textPrimary} />
+                <Ionicons
+                  name="play-skip-forward-outline"
+                  size={17}
+                  color={theme.textPrimary}
+                />
               </View>
               <View style={styles.rowTextGroup}>
                 <Text style={styles.rowTitle}>Auto-Play Queue</Text>
-                <Text style={styles.rowSubtitle}>Advance to next song when finished</Text>
+                <Text style={styles.rowSubtitle}>
+                  Advance to next song when finished
+                </Text>
               </View>
             </View>
 
@@ -198,12 +206,18 @@ export default function SettingsScreen() {
           <View style={styles.row}>
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons name="timer-outline" size={17} color={theme.textPrimary} />
+                <Ionicons
+                  name="timer-outline"
+                  size={17}
+                  color={theme.textPrimary}
+                />
               </View>
               <View style={styles.rowTextGroup}>
                 <Text style={styles.rowTitle}>Sleep Timer</Text>
                 <Text style={styles.rowSubtitle}>
-                  {sleepTimerMinutes ? `Pauses in ${sleepTimerMinutes}m` : 'Pause playback automatically'}
+                  {sleepTimerMinutes
+                    ? `Pauses in ${sleepTimerMinutes}m`
+                    : "Pause playback automatically"}
                 </Text>
               </View>
             </View>
@@ -211,11 +225,14 @@ export default function SettingsScreen() {
             <View style={styles.timerPillGroup}>
               {([null, 15, 30, 60] as (number | null)[]).map((val) => {
                 const isActive = sleepTimerMinutes === val;
-                const label = val === null ? 'Off' : `${val}m`;
+                const label = val === null ? "Off" : `${val}m`;
                 return (
                   <TouchableOpacity
                     key={label}
-                    style={[styles.timerPill, isActive && styles.timerPillActive]}
+                    style={[
+                      styles.timerPill,
+                      isActive && styles.timerPillActive,
+                    ]}
                     onPress={() => setSleepTimer(val)}
                     activeOpacity={0.8}
                   >
@@ -248,16 +265,24 @@ export default function SettingsScreen() {
           >
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons name="folder-open-outline" size={17} color={theme.textPrimary} />
+                <Ionicons
+                  name="folder-open-outline"
+                  size={17}
+                  color={theme.textPrimary}
+                />
               </View>
               <View style={styles.rowTextGroup}>
                 <Text style={styles.rowTitle}>Import Local Audio</Text>
                 <Text style={styles.rowSubtitle}>
-                  {importStatus || 'Select audio files from device storage'}
+                  {importStatus || "Select audio files from device storage"}
                 </Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.textSecondary}
+            />
           </TouchableOpacity>
 
           <View style={styles.rowDivider} />
@@ -270,14 +295,26 @@ export default function SettingsScreen() {
           >
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons name="trash-outline" size={17} color={theme.textPrimary} />
+                <Ionicons
+                  name="trash-outline"
+                  size={17}
+                  color={theme.textPrimary}
+                />
               </View>
               <View style={styles.rowTextGroup}>
-                <Text style={[styles.rowTitle, styles.dangerText]}>Clear Indexed Library</Text>
-                <Text style={styles.rowSubtitle}>Reset SQLite database index</Text>
+                <Text style={[styles.rowTitle, styles.dangerText]}>
+                  Clear Indexed Library
+                </Text>
+                <Text style={styles.rowSubtitle}>
+                  Reset SQLite database index
+                </Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.textSecondary}
+            />
           </TouchableOpacity>
         </View>
 
@@ -294,21 +331,31 @@ export default function SettingsScreen() {
           >
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons name="log-out-outline" size={17} color={theme.textPrimary} />
+                <Ionicons
+                  name="log-out-outline"
+                  size={17}
+                  color={theme.textPrimary}
+                />
               </View>
               <View style={styles.rowTextGroup}>
                 <Text style={styles.rowTitle}>
-                  {user.is_logged_in ? 'Log Out' : 'Exit Guest Session'}
+                  {user.is_logged_in ? "Log Out" : "Exit Guest Session"}
                 </Text>
-                <Text style={styles.rowSubtitle}>Return to Welcome Landing Screen</Text>
+                <Text style={styles.rowSubtitle}>
+                  Return to Welcome Landing Screen
+                </Text>
               </View>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.textSecondary}
+            />
           </TouchableOpacity>
         </View>
 
         {/* Footer */}
-        <Text style={styles.footerText}>JStream v1.0.0 • Personal Music</Text>
+        <Text style={styles.footerText}>Li Xun</Text>
       </ScrollView>
 
       {/* Clear Library Confirmation Modal */}
@@ -326,11 +373,11 @@ export default function SettingsScreen() {
       {/* Logout Confirmation Modal */}
       <ConfirmModal
         visible={showLogoutModal}
-        title={user.is_logged_in ? 'Log Out' : 'Exit Guest Session'}
+        title={user.is_logged_in ? "Log Out" : "Exit Guest Session"}
         message={
           user.is_logged_in
-            ? 'Are you sure you want to log out of your account?'
-            : 'Are you sure you want to exit your guest session and return to the welcome screen?'
+            ? "Are you sure you want to log out of your account?"
+            : "Are you sure you want to exit your guest session and return to the welcome screen?"
         }
         icon="log-out-outline"
         confirmText="Log Out"

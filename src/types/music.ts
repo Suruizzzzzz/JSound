@@ -10,6 +10,8 @@ export interface Track {
   source: 'local' | 'youtube';
   is_synced: number; // 0 or 1
   created_at: string; // ISO string
+  is_streaming?: boolean;
+  headers?: Record<string, string>;
 }
 
 export interface Playlist {
