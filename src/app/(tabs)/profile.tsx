@@ -6,10 +6,16 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Image,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
@@ -37,10 +43,14 @@ export default function ProfileScreen() {
   const isSyncing = useAuthStore((state) => state.isSyncing);
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
   const signOut = useAuthStore((state) => state.signOut);
+  const setProfileName = useAuthStore((state) => state.setProfileName);
+  const setProfileAvatar = useAuthStore((state) => state.setProfileAvatar);
 
   const tracks = usePlayerStore((state) => state.tracks);
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showNameModal, setShowNameModal] = useState(false);
+  const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
   // Theme-adaptive logo
@@ -56,6 +66,76 @@ export default function ProfileScreen() {
     () => tracks.reduce((acc, t) => acc + (t.duration || 0), 0),
     [tracks]
   );
+
+  const [showAvatarActionModal, setShowAvatarActionModal] = useState(false);
+
+  const handleAvatarPress = () => {
+    if (user.avatar_url) {
+      setShowAvatarActionModal(true);
+    } else {
+      handlePickNewAvatar();
+    }
+  };
+
+  const handlePickNewAvatar = async () => {
+    setShowAvatarActionModal(false);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets?.[0]?.uri) {
+        const pickedUri = result.assets[0].uri;
+        const docDir = FileSystem.documentDirectory;
+        if (docDir) {
+          const targetUri = `${docDir}jstream_profile_avatar.jpg`;
+          try {
+            await FileSystem.copyAsync({ from: pickedUri, to: targetUri });
+            await setProfileAvatar(targetUri);
+          } catch {
+            await setProfileAvatar(pickedUri);
+          }
+        } else {
+          await setProfileAvatar(pickedUri);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to pick profile image:', err);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setShowAvatarActionModal(false);
+    try {
+      const docDir = FileSystem.documentDirectory;
+      if (docDir) {
+        const targetUri = `${docDir}jstream_profile_avatar.jpg`;
+        try {
+          await FileSystem.deleteAsync(targetUri, { idempotent: true });
+        } catch {
+          // non-fatal
+        }
+      }
+      await setProfileAvatar(null);
+    } catch (err) {
+      console.warn('Failed to remove profile avatar:', err);
+    }
+  };
+
+  const handleOpenNameModal = () => {
+    setEditingName(user.name);
+    setShowNameModal(true);
+  };
+
+  const handleSaveName = async () => {
+    if (editingName.trim()) {
+      await setProfileName(editingName.trim());
+    }
+    setShowNameModal(false);
+  };
 
   const handleSyncCloud = async () => {
     try {
@@ -109,20 +189,41 @@ export default function ProfileScreen() {
 
         {/* User Identity Section */}
         <View style={styles.identitySection}>
-          <View style={styles.avatarCircle}>
-            {user.is_logged_in ? (
-              <Text style={styles.avatarInitial}>{user.name.charAt(0)}</Text>
+          <TouchableOpacity
+            style={styles.avatarCircle}
+            onPress={handleAvatarPress}
+            activeOpacity={0.8}
+            accessibilityLabel="Change profile avatar"
+          >
+            {user.avatar_url ? (
+              <Image source={{ uri: user.avatar_url }} style={styles.avatarImage} />
             ) : (
-              <Ionicons name="person-outline" size={34} color={theme.textSecondary} />
+              <Text style={styles.avatarInitial}>
+                {(user.name || 'J').charAt(0).toUpperCase()}
+              </Text>
             )}
-          </View>
+            <View style={styles.avatarEditBadge}>
+              <Ionicons name="camera" size={11} color={theme.onPrimary} />
+            </View>
+          </TouchableOpacity>
 
-          <Text style={styles.userName}>
-            {user.is_logged_in ? user.name : 'Local Guest'}
-          </Text>
+          <TouchableOpacity
+            style={styles.userNameRow}
+            onPress={handleOpenNameModal}
+            activeOpacity={0.7}
+            accessibilityLabel="Edit display name"
+          >
+            <Text style={styles.userName}>{user.name}</Text>
+            <Ionicons
+              name="pencil"
+              size={14}
+              color={theme.textSecondary}
+              style={styles.editNameIcon}
+            />
+          </TouchableOpacity>
 
           <Text style={styles.userEmail}>
-            {user.is_logged_in ? user.email : 'Offline Session'}
+            {user.is_logged_in ? user.email : 'Offline Mode • On-Device Library'}
           </Text>
 
           <View style={[styles.badgePill, user.is_logged_in && styles.badgePillActive]}>
@@ -132,12 +233,12 @@ export default function ProfileScreen() {
                 user.is_logged_in && styles.badgePillTextActive,
               ]}
             >
-              {user.is_logged_in ? 'PRO SYNC' : 'GUEST'}
+              {user.is_logged_in ? 'PRO SYNC' : 'OFFLINE'}
             </Text>
           </View>
         </View>
 
-        {/* 3-Column Stats Strip */}
+        {/* 3-Column Stats Strip (Minimalist, zero developer jargon) */}
         <View style={styles.statsCard}>
           <View style={styles.statItem}>
             <Text style={styles.statValue}>{tracks.length}</Text>
@@ -154,8 +255,8 @@ export default function ProfileScreen() {
           <View style={styles.statDivider} />
 
           <View style={styles.statItem}>
-            <Text style={styles.statValue}>SQLite</Text>
-            <Text style={styles.statLabel}>Storage</Text>
+            <Text style={styles.statValue}>On-Device</Text>
+            <Text style={styles.statLabel}>Library</Text>
           </View>
         </View>
 
@@ -259,6 +360,95 @@ export default function ProfileScreen() {
         onConfirm={handleConfirmLogout}
         onCancel={() => setShowLogoutModal(false)}
       />
+
+      {/* Edit Display Name Modal */}
+      <Modal
+        visible={showNameModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowNameModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Edit Display Name</Text>
+            <Text style={styles.modalSubtitle}>Personalize your on-device listener profile</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={editingName}
+              onChangeText={setEditingName}
+              placeholder="e.g. JStream Listener"
+              placeholderTextColor={theme.textMuted}
+              maxLength={30}
+              autoFocus
+              selectTextOnFocus
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowNameModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveBtn}
+                onPress={handleSaveName}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Avatar Options Modal (Choose / Remove) */}
+      <Modal
+        visible={showAvatarActionModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowAvatarActionModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Profile Avatar</Text>
+            <Text style={styles.modalSubtitle}>
+              Change or remove your on-device listener photo
+            </Text>
+
+            <TouchableOpacity
+              style={styles.avatarOptionBtn}
+              onPress={handlePickNewAvatar}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="images-outline" size={20} color={theme.textPrimary} />
+              <Text style={styles.avatarOptionText}>Choose from Photos</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.avatarOptionBtn}
+              onPress={handleRemoveAvatar}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="trash-outline" size={20} color={theme.error} />
+              <Text style={styles.avatarOptionDeleteText}>Remove Photo</Text>
+            </TouchableOpacity>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowAvatarActionModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

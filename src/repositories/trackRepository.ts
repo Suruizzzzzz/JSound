@@ -4,7 +4,7 @@ import { Track } from '@/types/music';
 export async function getAllTracks(userId: string = 'local_guest'): Promise<Track[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<Track>(
-    'SELECT * FROM tracks WHERE user_id = ? ORDER BY title COLLATE NOCASE ASC',
+    'SELECT * FROM tracks WHERE user_id = ? ORDER BY sort_order ASC, created_at DESC',
     [userId]
   );
   return rows;
@@ -23,8 +23,8 @@ export async function saveTrack(track: Track): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
     `INSERT OR REPLACE INTO tracks (
-      id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri, duration, source, is_synced, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri, duration, source, is_synced, created_at, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       track.id,
       track.user_id || 'local_guest',
@@ -37,6 +37,7 @@ export async function saveTrack(track: Track): Promise<void> {
       track.source,
       track.is_synced ?? 0,
       track.created_at,
+      track.sort_order ?? 0,
     ]
   );
 }
@@ -49,8 +50,8 @@ export async function saveTracks(tracks: Track[]): Promise<void> {
     for (const track of tracks) {
       await db.runAsync(
         `INSERT OR REPLACE INTO tracks (
-          id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri, duration, source, is_synced, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri, duration, source, is_synced, created_at, sort_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           track.id,
           track.user_id || 'local_guest',
@@ -63,7 +64,21 @@ export async function saveTracks(tracks: Track[]): Promise<void> {
           track.source,
           track.is_synced ?? 0,
           track.created_at,
+          track.sort_order ?? 0,
         ]
+      );
+    }
+  });
+}
+
+export async function updateTrackOrder(orderedIds: string[]): Promise<void> {
+  if (orderedIds.length === 0) return;
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    for (let index = 0; index < orderedIds.length; index++) {
+      await db.runAsync(
+        'UPDATE tracks SET sort_order = ? WHERE id = ?',
+        [index, orderedIds[index]]
       );
     }
   });
@@ -95,3 +110,18 @@ export async function clearAllTracks(userId: string = 'local_guest'): Promise<vo
   const db = await getDatabase();
   await db.runAsync('DELETE FROM tracks WHERE user_id = ?', [userId]);
 }
+
+export {
+  updateTrackArtwork,
+  updateTrackMetadata,
+  createPlaylist,
+  getAllPlaylists,
+  getPlaylistById,
+  deletePlaylist,
+  updatePlaylistCover,
+  addTrackToPlaylist,
+  removeTrackFromPlaylist,
+  getPlaylistTracks,
+  isTrackInPlaylist,
+  getPlaylistsContainingTrack,
+} from '@/lib/database';

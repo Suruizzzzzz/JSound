@@ -75,4 +75,36 @@ export const createStyles = (theme: ThemeColors) =>
       justifyContent: 'center',
       alignItems: 'center',
     },
+    actionIconButton: {
+      padding: 6,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    actionsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    dragHandle: {
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    downloadProgressContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 5,
+      paddingHorizontal: 8,
+      borderRadius: 12,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+      gap: 4,
+    },
+    downloadProgressText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: theme.primary,
+    },
   });

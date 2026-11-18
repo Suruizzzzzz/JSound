@@ -264,17 +264,20 @@ export const createStyles = (theme: ThemeColors) =>
       flexDirection: 'row',
       alignItems: 'center',
       paddingVertical: 6,
-      paddingHorizontal: 10,
+      paddingHorizontal: 8,
       borderRadius: 14,
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
+      gap: 4,
     },
     progressPercentageText: {
       fontSize: 11,
       fontWeight: '700',
       color: theme.primary,
-      marginLeft: 5,
+    },
+    progressCancelIcon: {
+      marginLeft: 2,
     },
     savedPill: {
       flexDirection: 'row',

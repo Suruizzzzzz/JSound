@@ -686,6 +686,49 @@ export async function resolveOnlineStreamUrl(
   }
 }
 
+// Active downloads map for cancellation support
+const activeDownloads = new Map<
+  string,
+  {
+    resumable: FileSystem.DownloadResumable;
+    fileUri: string;
+  }
+>();
+
+/**
+ * Cancels an in-progress track download and cleans up any partial file on disk.
+ */
+export async function cancelTrackDownload(trackId: string): Promise<boolean> {
+  const active = activeDownloads.get(trackId);
+  if (!active) {
+    return false;
+  }
+  activeDownloads.delete(trackId);
+  try {
+    await active.resumable.cancelAsync();
+  } catch (err) {
+    console.warn(`[DownloadService] Cancelled resumable download for track ${trackId}:`, err);
+  }
+
+  try {
+    const fileInfo = await FileSystem.getInfoAsync(active.fileUri);
+    if (fileInfo.exists) {
+      await FileSystem.deleteAsync(active.fileUri, { idempotent: true });
+    }
+  } catch (cleanupErr) {
+    console.warn(`[DownloadService] Error cleaning up partial file ${active.fileUri}:`, cleanupErr);
+  }
+
+  return true;
+}
+
+/**
+ * Checks whether a track download is currently active.
+ */
+export function isTrackDownloading(trackId: string): boolean {
+  return activeDownloads.has(trackId);
+}
+
 /**
  * Download an online track into the local offline library:
  * 1. Resolves direct verified stream URL and headers.
@@ -762,22 +805,40 @@ export async function downloadTrackToOfflineLibrary(
     }
   );
 
-  const downloadResult = await downloadResumable.downloadAsync();
-  if (!downloadResult || !downloadResult.uri) {
-    throw new Error('Audio download failed. No local URI returned.');
-  }
+  activeDownloads.set(track.id, { resumable: downloadResumable, fileUri });
 
-  // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
-  const fileInfo = await FileSystem.getInfoAsync(fileUri);
-  if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
+  let downloadResult: FileSystem.FileSystemDownloadResult | undefined;
+  try {
+    downloadResult = await downloadResumable.downloadAsync();
+    if (!downloadResult || !downloadResult.uri) {
+      throw new Error('Audio download failed. No local URI returned.');
+    }
+
+    // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
+      try {
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      } catch {
+        // ignore
+      }
+      throw new Error(
+        `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
+      );
+    }
+  } catch (err: any) {
+    // If cancelled or failed, ensure partial file is wiped
     try {
-      await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      const info = await FileSystem.getInfoAsync(fileUri);
+      if (info.exists) {
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      }
     } catch {
       // ignore
     }
-    throw new Error(
-      `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
-    );
+    throw err;
+  } finally {
+    activeDownloads.delete(track.id);
   }
 
   onProgress?.(100);

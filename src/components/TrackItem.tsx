@@ -4,6 +4,7 @@ import {
   Text,
   TouchableOpacity,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '@/types/music';
@@ -17,6 +18,12 @@ interface TrackItemProps {
   track: Track;
   queue: Track[];
   onDelete?: (id: string) => void;
+  downloadProgress?: number;
+  onCancelDownload?: (id: string) => void;
+  showDragHandle?: boolean;
+  dragHandleProps?: any;
+  onLongPress?: () => void;
+  onAddToPlaylist?: (track: Track) => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -26,7 +33,17 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
-export default function TrackItem({ track, queue, onDelete }: TrackItemProps) {
+export default function TrackItem({
+  track,
+  queue,
+  onDelete,
+  downloadProgress,
+  onCancelDownload,
+  showDragHandle,
+  dragHandleProps,
+  onLongPress,
+  onAddToPlaylist,
+}: TrackItemProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const playTrack = usePlayerStore((state) => state.playTrack);
@@ -56,6 +73,8 @@ export default function TrackItem({ track, queue, onDelete }: TrackItemProps) {
       style={[styles.container, isCurrent && styles.activeContainer]}
       activeOpacity={0.7}
       onPress={handlePress}
+      onLongPress={onLongPress}
+      delayLongPress={300}
     >
       {/* Artwork Thumbnail / Minimalist Monochrome Placeholder */}
       <View style={styles.artworkContainer}>
@@ -91,32 +110,69 @@ export default function TrackItem({ track, queue, onDelete }: TrackItemProps) {
         </View>
       </View>
 
-      {/* Optional action / delete button with ConfirmModal */}
-      {onDelete && (
-        <>
+      {/* Right-side Action & Handle Area */}
+      <View style={styles.actionsRow}>
+        {/* Active download progress with cancel */}
+        {downloadProgress !== undefined && (
           <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={() => setShowDeleteModal(true)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={styles.downloadProgressContainer}
+            onPress={() => onCancelDownload?.(track.id)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Cancel download"
           >
-            <Ionicons name="trash-outline" size={17} color={theme.textMuted} />
+            <ActivityIndicator size="small" color={theme.primary} />
+            <Text style={styles.downloadProgressText}>{downloadProgress}%</Text>
+            <Ionicons name="close-circle" size={15} color={theme.textSecondary} />
           </TouchableOpacity>
+        )}
 
-          <ConfirmModal
-            visible={showDeleteModal}
-            title="Delete Track"
-            message={`Are you sure you want to remove "${track.title}" from your offline library?`}
-            icon="trash-outline"
-            confirmText="Delete"
-            isDestructive={true}
-            onConfirm={() => {
-              setShowDeleteModal(false);
-              onDelete(track.id);
-            }}
-            onCancel={() => setShowDeleteModal(false)}
-          />
-        </>
-      )}
+        {/* Optional Add to Playlist Button */}
+        {onAddToPlaylist && (
+          <TouchableOpacity
+            style={styles.actionIconButton}
+            onPress={() => onAddToPlaylist(track)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Add to playlist"
+          >
+            <Ionicons name="bookmark-outline" size={17} color={theme.textMuted} />
+          </TouchableOpacity>
+        )}
+
+        {/* Optional action / delete button with ConfirmModal */}
+        {onDelete && (
+          <>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => setShowDeleteModal(true)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="trash-outline" size={17} color={theme.textMuted} />
+            </TouchableOpacity>
+
+            <ConfirmModal
+              visible={showDeleteModal}
+              title="Delete Track"
+              message={`Are you sure you want to remove "${track.title}" from your offline library?`}
+              icon="trash-outline"
+              confirmText="Delete"
+              isDestructive={true}
+              onConfirm={() => {
+                setShowDeleteModal(false);
+                onDelete(track.id);
+              }}
+              onCancel={() => setShowDeleteModal(false)}
+            />
+          </>
+        )}
+
+        {/* Optional drag reorder handle */}
+        {showDragHandle && (
+          <View style={styles.dragHandle} {...dragHandleProps}>
+            <Ionicons name="reorder-two-outline" size={20} color={theme.textMuted} />
+          </View>
+        )}
+      </View>
     </TouchableOpacity>
   );
 }

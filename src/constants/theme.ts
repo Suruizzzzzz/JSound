@@ -10,6 +10,7 @@ export interface ThemeColors {
   textPrimary: string;
   textSecondary: string;
   textMuted: string;
+  error: string;
 }
 
 export const SoftDarkTheme: ThemeColors = {
@@ -22,6 +23,7 @@ export const SoftDarkTheme: ThemeColors = {
   textPrimary: '#F4F4F2',
   textSecondary: '#9A9A9A',
   textMuted: '#666666',
+  error: '#E5484D',
 };
 
 export const SoftLightTheme: ThemeColors = {
@@ -34,6 +36,7 @@ export const SoftLightTheme: ThemeColors = {
   textPrimary: '#1C1C1C',
   textSecondary: '#686865',
   textMuted: '#9E9E9A',
+  error: '#E5484D',
 };
 
 export const Themes = {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getSetting, setSetting } from '@/lib/database';
 
 export interface UserProfile {
   id: string;
@@ -12,8 +13,8 @@ export interface UserProfile {
 
 export const GUEST_USER: UserProfile = {
   id: 'local_guest',
-  name: 'Guest Listener',
-  email: 'guest@jstream.offline',
+  name: 'JStream Listener',
+  email: 'Offline Mode • On-Device Library',
   avatar_url: null,
   is_logged_in: false,
   sync_status: 'offline',
@@ -25,6 +26,9 @@ export interface AuthState {
   isGuestSession: boolean;
   isSyncing: boolean;
   setGuestSession: (isGuest: boolean) => void;
+  initProfile: () => Promise<void>;
+  setProfileName: (name: string) => Promise<void>;
+  setProfileAvatar: (avatarUri: string | null) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string) => Promise<void>;
   syncPlaylistsToCloud: () => Promise<void>;
@@ -38,6 +42,55 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   setGuestSession: (isGuest: boolean) => {
     set({ isGuestSession: isGuest });
+  },
+
+  initProfile: async () => {
+    try {
+      const savedName = await getSetting('profile_display_name', 'JStream Listener');
+      const savedAvatar = await getSetting('profile_avatar_uri', null);
+      set((state) => ({
+        user: {
+          ...state.user,
+          name: savedName || 'JStream Listener',
+          avatar_url: savedAvatar,
+        },
+      }));
+    } catch (e) {
+      console.warn('Failed to load profile settings:', e);
+    }
+  },
+
+  setProfileName: async (name: string) => {
+    const cleanName = name.trim() || 'JStream Listener';
+    try {
+      await setSetting('profile_display_name', cleanName);
+    } catch (e) {
+      console.warn('Failed to persist profile display name:', e);
+    }
+    set((state) => ({
+      user: {
+        ...state.user,
+        name: cleanName,
+      },
+    }));
+  },
+
+  setProfileAvatar: async (avatarUri: string | null) => {
+    try {
+      if (avatarUri) {
+        await setSetting('profile_avatar_uri', avatarUri);
+      } else {
+        await setSetting('profile_avatar_uri', '');
+      }
+    } catch (e) {
+      console.warn('Failed to persist profile avatar:', e);
+    }
+    set((state) => ({
+      user: {
+        ...state.user,
+        avatar_url: avatarUri || null,
+      },
+    }));
   },
 
   signInWithGoogle: async () => {

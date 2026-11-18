@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import { Track, RepeatMode } from '@/types/music';
+import { updateTrackOrder } from '@/repositories/trackRepository';
 import {
   loadAndPlayAudio,
   pauseAudio,
   resumeAudio,
   seekAudio,
   stopAndUnloadAudio,
+  updateAudioMetadata,
 } from '@/services/audioService';
 
 interface PlayerState {
@@ -37,6 +39,12 @@ interface PlayerState {
   seekTo: (seconds: number) => Promise<void>;
   removeTrack: (id: string) => Promise<void>;
   clearAllTracks: () => Promise<void>;
+  reorderTracks: (tracks: Track[]) => Promise<void>;
+  updateCurrentOrLibraryTrackArtwork: (trackId: string, newArtworkUri: string | null) => void;
+  updateTrackMetadata: (
+    trackId: string,
+    updates: { title?: string; artist?: string; local_artwork_uri?: string | null }
+  ) => void;
 }
 
 let sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
@@ -118,36 +126,48 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ? { uri: track.local_audio_uri, headers: track.headers }
         : track.local_audio_uri;
 
-      await loadAndPlayAudio(audioSource, (status) => {
-        const position = status.currentTime ?? 0;
-        const duration = status.duration > 0 ? status.duration : (track.duration || 0);
+      const metadata = {
+        title: track.title || 'Unknown Title',
+        artist: track.artist || 'Unknown Artist',
+        albumTitle: 'JStream',
+        artworkUrl: track.local_artwork_uri || undefined,
+      };
 
-        // While buffering or loading stream, do not flip isPlaying to false prematurely
-        const isBuffering =
-          status.isBuffering ||
-          status.timeControlStatus === 'waiting' ||
-          !status.isLoaded;
+      await loadAndPlayAudio(
+        audioSource,
+        (status) => {
+          const position = status.currentTime ?? 0;
+          const duration = status.duration > 0 ? status.duration : (track.duration || 0);
 
-        set((prevState) => ({
-          isPlaying: isBuffering ? true : status.playing,
-          isLoading: isBuffering,
-          position,
-          duration,
-        }));
+          // While buffering or loading stream, do not flip isPlaying to false prematurely
+          const isBuffering =
+            status.isBuffering ||
+            status.timeControlStatus === 'waiting' ||
+            !status.isLoaded;
 
-        if (status.didJustFinish && (position > 1 || (duration > 0 && position >= duration - 1.5))) {
-          const currentRepeat = get().repeatMode;
-          const autoPlay = get().autoPlay;
-          if (currentRepeat === 'one') {
-            get().seekTo(0).then(() => resumeAudio());
-          } else if (autoPlay) {
-            get().playNext();
-          } else {
-            pauseAudio();
-            set({ isPlaying: false });
+          set((prevState) => ({
+            isPlaying: isBuffering ? true : status.playing,
+            isLoading: isBuffering,
+            position,
+            duration,
+          }));
+
+          if (status.didJustFinish && (position > 1 || (duration > 0 && position >= duration - 1.5))) {
+            const currentRepeat = get().repeatMode;
+            const autoPlay = get().autoPlay;
+            if (currentRepeat === 'one') {
+              get().seekTo(0).then(() => resumeAudio());
+            } else if (autoPlay) {
+              get().playNext();
+            } else {
+              pauseAudio();
+              set({ isPlaying: false });
+            }
           }
-        }
-      });
+        },
+        track.headers,
+        metadata
+      );
 
       set({ isPlaying: true, isLoading: false });
     } catch (error) {
@@ -263,5 +283,71 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       position: 0,
       duration: 0,
     });
+  },
+
+  reorderTracks: async (newTracks: Track[]) => {
+    set({ tracks: newTracks, queue: newTracks });
+    try {
+      await updateTrackOrder(newTracks.map((t) => t.id));
+    } catch (err) {
+      console.warn('Failed to persist reordered tracks:', err);
+    }
+  },
+
+  updateCurrentOrLibraryTrackArtwork: (trackId: string, newArtworkUri: string | null) => {
+    const { tracks, queue, currentTrack } = get();
+
+    const updateTrackItem = (t: Track): Track =>
+      t.id === trackId ? { ...t, local_artwork_uri: newArtworkUri } : t;
+
+    const nextTracks = tracks.map(updateTrackItem);
+    const nextQueue = queue.map(updateTrackItem);
+    const nextCurrent =
+      currentTrack?.id === trackId
+        ? { ...currentTrack, local_artwork_uri: newArtworkUri }
+        : currentTrack;
+
+    set({
+      tracks: nextTracks,
+      queue: nextQueue,
+      currentTrack: nextCurrent,
+    });
+
+    if (nextCurrent && nextCurrent.id === trackId) {
+      updateAudioMetadata({
+        title: nextCurrent.title,
+        artist: nextCurrent.artist,
+        artworkUrl: newArtworkUri || undefined,
+      });
+    }
+  },
+
+  updateTrackMetadata: (
+    trackId: string,
+    updates: { title?: string; artist?: string; local_artwork_uri?: string | null }
+  ) => {
+    const { tracks, queue, currentTrack } = get();
+
+    const updateTrackItem = (t: Track): Track =>
+      t.id === trackId ? { ...t, ...updates } : t;
+
+    const nextTracks = tracks.map(updateTrackItem);
+    const nextQueue = queue.map(updateTrackItem);
+    const nextCurrent =
+      currentTrack?.id === trackId ? { ...currentTrack, ...updates } : currentTrack;
+
+    set({
+      tracks: nextTracks,
+      queue: nextQueue,
+      currentTrack: nextCurrent,
+    });
+
+    if (nextCurrent && nextCurrent.id === trackId) {
+      updateAudioMetadata({
+        title: nextCurrent.title,
+        artist: nextCurrent.artist,
+        artworkUrl: nextCurrent.local_artwork_uri || undefined,
+      });
+    }
   },
 }));

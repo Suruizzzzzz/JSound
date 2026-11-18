@@ -1,11 +1,15 @@
 import {
   createAudioPlayer,
   setAudioModeAsync,
+  requestNotificationPermissionsAsync,
   AudioPlayer,
   AudioStatus,
   AudioSource,
+  AudioMetadata,
+  AudioLockScreenOptions,
 } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { EventSubscription } from 'expo';
 
 let playerInstance: AudioPlayer | null = null;
@@ -14,15 +18,37 @@ let currentStatusCallback: ((status: AudioStatus) => void) | null = null;
 let isAudioModeConfigured = false;
 let shouldAutoPlay = true;
 
+// Native foreground AudioControlsService binding is only registered in standalone/preview APK builds.
+// In Expo Go (storeClient), attempting to start or bind background playback services triggers a LogBox error.
+const isStandalone = Constants.executionEnvironment === ExecutionEnvironment.Standalone;
+
+const DEFAULT_LOCK_SCREEN_OPTIONS: AudioLockScreenOptions = {
+  showNextTrack: true,
+  showPreviousTrack: true,
+  showSeekForward: true,
+  showSeekBackward: true,
+  seekForwardIntervalSeconds: 10,
+  seekBackwardIntervalSeconds: 10,
+};
+
 export async function ensureAudioMode(): Promise<void> {
   if (isAudioModeConfigured) return;
   try {
     await setAudioModeAsync({
       playsInSilentMode: true,
-      shouldPlayInBackground: true,
+      shouldPlayInBackground: isStandalone,
       interruptionMode: 'doNotMix',
     });
     isAudioModeConfigured = true;
+
+    // Request notification permission for Android 13+ lock screen and shade controls in standalone builds
+    if (isStandalone) {
+      try {
+        await requestNotificationPermissionsAsync();
+      } catch (permErr) {
+        console.warn('[AudioService] Notification permission request error:', permErr);
+      }
+    }
   } catch (error) {
     console.warn('[AudioService] Failed to configure audio mode:', error);
   }
@@ -35,7 +61,8 @@ export function getAudioPlayer(): AudioPlayer | null {
 export async function loadAndPlayAudio(
   uriOrSource: string | AudioSource,
   onStatusUpdate: (status: AudioStatus) => void,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  metadata?: AudioMetadata
 ): Promise<AudioPlayer> {
   await ensureAudioMode();
   currentStatusCallback = onStatusUpdate;
@@ -76,6 +103,25 @@ export async function loadAndPlayAudio(
         // Reuse existing player with .replace()
         playerInstance.replace(source);
 
+        // Update system lock screen & media notification metadata (standalone builds only)
+        if (isStandalone && metadata) {
+          try {
+            if (typeof playerInstance.updateLockScreenMetadata === 'function') {
+              const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
+              if (res && typeof res.catch === 'function') {
+                res.catch(() => {});
+              }
+            } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
+              const res: any = (playerInstance as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+              if (res && typeof res.catch === 'function') {
+                res.catch(() => {});
+              }
+            }
+          } catch {
+            // Suppress in Expo Go or environments without service binding
+          }
+        }
+
         // If player is already loaded, start playback immediately
         if (playerInstance.isLoaded) {
           console.log('[AudioService] Player already loaded on replace. Starting playback...');
@@ -94,6 +140,18 @@ export async function loadAndPlayAudio(
 
     const player = createAudioPlayer(source, { updateInterval: 250 });
     playerInstance = player;
+
+    // Enable system media notification and lock screen controls (standalone builds only)
+    if (isStandalone && metadata && typeof player.setActiveForLockScreen === 'function') {
+      try {
+        const res: any = (player as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+        if (res && typeof res.catch === 'function') {
+          res.catch(() => {});
+        }
+      } catch {
+        // Suppress in Expo Go
+      }
+    }
 
     // Attach listener BEFORE calling play to catch early status updates & prevent race conditions
     statusSubscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
@@ -177,6 +235,25 @@ export async function stopAndUnloadAudio(): Promise<void> {
       // ignore
     }
 
+    // Dismiss system media notification and lock screen controls in standalone builds
+    if (isStandalone) {
+      try {
+        if (typeof playerToRelease.clearLockScreenControls === 'function') {
+          const res: any = (playerToRelease as any).clearLockScreenControls();
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        } else if (typeof playerToRelease.setActiveForLockScreen === 'function') {
+          const res: any = (playerToRelease as any).setActiveForLockScreen(false);
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        }
+      } catch {
+        // Suppress
+      }
+    }
+
     try {
       if (typeof playerToRelease.remove === 'function') {
         playerToRelease.remove();
@@ -186,6 +263,25 @@ export async function stopAndUnloadAudio(): Promise<void> {
     } catch {
       // Suppress already released / shared object warnings
     }
+  }
+}
+
+export function updateAudioMetadata(metadata: AudioMetadata): void {
+  if (!isStandalone || !playerInstance) return;
+  try {
+    if (typeof playerInstance.updateLockScreenMetadata === 'function') {
+      const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
+      if (res && typeof res.catch === 'function') {
+        res.catch(() => {});
+      }
+    } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
+      const res: any = (playerInstance as any).setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+      if (res && typeof res.catch === 'function') {
+        res.catch(() => {});
+      }
+    }
+  } catch {
+    // Suppress in Expo Go
   }
 }
 

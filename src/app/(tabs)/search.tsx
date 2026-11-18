@@ -14,6 +14,7 @@ import { searchLocalTracks, getAllTracks, deleteTrack as removeTrackFromDb } fro
 import {
   searchOnlineTracks,
   downloadTrackToOfflineLibrary,
+  cancelTrackDownload,
   resolveOnlineStreamUrl,
   OnlineTrackResult,
 } from '@/services/musicDownloadService';
@@ -326,6 +327,21 @@ export default function SearchScreen() {
     }
   };
 
+  // Cancel an in-progress track download
+  const handleCancelDownload = async (trackId: string) => {
+    try {
+      await cancelTrackDownload(trackId);
+    } catch (err) {
+      console.warn('Failed to cancel download:', err);
+    } finally {
+      setDownloadingMap((prev) => {
+        const next = { ...prev };
+        delete next[trackId];
+        return next;
+      });
+    }
+  };
+
   // Delete local track handler for offline list
   const handleDeleteTrack = async (id: string) => {
     try {
@@ -438,11 +454,23 @@ export default function SearchScreen() {
               </Text>
             </TouchableOpacity>
           ) : isDownloading ? (
-            // State 2: Circular / percentage progress indicator while downloading
-            <View style={styles.progressIndicatorContainer}>
+            // State 2: Circular / percentage progress indicator while downloading with Cancel button
+            <TouchableOpacity
+              style={styles.progressIndicatorContainer}
+              onPress={() => handleCancelDownload(item.id)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Cancel download"
+            >
               <ActivityIndicator size="small" color={theme.primary} />
               <Text style={styles.progressPercentageText}>{downloadPct}%</Text>
-            </View>
+              <Ionicons
+                name="close-circle"
+                size={16}
+                color={theme.textSecondary}
+                style={styles.progressCancelIcon}
+              />
+            </TouchableOpacity>
           ) : (
             // State 1: Independent Download icon button (idle)
             <TouchableOpacity

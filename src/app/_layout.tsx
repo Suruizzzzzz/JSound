@@ -8,6 +8,7 @@ import { initDatabase, getSetting } from '@/lib/database';
 import { getAllTracks } from '@/repositories/trackRepository';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
+import { useAuthStore } from '@/store/authStore';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -27,6 +28,9 @@ export default function RootLayout() {
 
         // Load saved theme preference
         await initTheme();
+
+        // Load saved local user profile
+        await useAuthStore.getState().initProfile();
 
         // Preload stored tracks into Zustand store
         const tracks = await getAllTracks();
