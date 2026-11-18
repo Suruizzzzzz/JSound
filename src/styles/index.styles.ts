@@ -25,10 +25,12 @@ export const createStyles = (theme: ThemeColors) =>
     listContent: {
       paddingBottom: 150, // Clearance for MiniPlayer + Bottom Navigation
     },
-    header: {
+    fixedHeader: {
+      backgroundColor: theme.background,
+      zIndex: 10,
       paddingHorizontal: 16,
-      paddingTop: 12,
-      paddingBottom: 20,
+      paddingTop: 8,
+      paddingBottom: 12,
       borderBottomWidth: 1,
       borderBottomColor: theme.border,
     },
@@ -84,9 +86,30 @@ export const createStyles = (theme: ThemeColors) =>
     },
     libraryMetaRow: {
       flexDirection: 'row',
-      alignItems: 'baseline',
+      alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: 12,
+    },
+    headerRightButtonsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    sortButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 9,
+      paddingVertical: 5,
+      borderRadius: 8,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+      gap: 5,
+    },
+    sortButtonText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: theme.textSecondary,
     },
     libraryTitle: {
       fontSize: 24,
@@ -591,5 +614,47 @@ export const createStyles = (theme: ThemeColors) =>
       fontSize: 13,
       fontWeight: '600',
       color: theme.primary,
+    },
+    sortOptionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      borderRadius: 10,
+      marginBottom: 8,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    sortOptionRowActive: {
+      borderColor: theme.primary,
+      backgroundColor: theme.surface,
+    },
+    sortOptionLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      flex: 1,
+    },
+    sortOptionIconWrap: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: theme.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    sortOptionText: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: theme.textPrimary,
+    },
+    sortOptionSubtext: {
+      fontSize: 11,
+      color: theme.textSecondary,
+      marginTop: 2,
     },
   });

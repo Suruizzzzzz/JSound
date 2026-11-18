@@ -215,9 +215,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     } else if (repeatMode === 'all') {
       await playTrack(queue[0], queue);
     } else {
-      // End of queue with repeat off
-      await stopAndUnloadAudio();
-      set({ isPlaying: false, position: 0 });
+      // End of queue (infinite continuous playback):
+      // When reaching the last song, continue seamlessly with a randomized song so music never stops
+      const pool = queue.length > 0 ? queue : get().tracks;
+      if (pool.length > 1) {
+        let nextIndex: number;
+        do {
+          nextIndex = Math.floor(Math.random() * pool.length);
+        } while (nextIndex === currentIndex && pool.length > 1);
+        await playTrack(pool[nextIndex], pool);
+      } else if (pool.length === 1) {
+        await playTrack(pool[0], pool);
+      } else {
+        await stopAndUnloadAudio();
+        set({ isPlaying: false, position: 0 });
+      }
     }
   },
 

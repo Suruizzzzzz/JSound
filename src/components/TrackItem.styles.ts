@@ -91,6 +91,24 @@ export const createStyles = (theme: ThemeColors) =>
       justifyContent: 'center',
       alignItems: 'center',
     },
+    reorderControlsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginLeft: 4,
+    },
+    reorderArrowBtn: {
+      padding: 6,
+      borderRadius: 6,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    reorderArrowDisabled: {
+      opacity: 0.25,
+    },
     downloadProgressContainer: {
       flexDirection: 'row',
       alignItems: 'center',

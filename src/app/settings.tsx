@@ -324,41 +324,43 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* SESSION & ABOUT */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Session &amp; Account</Text>
-        </View>
-
-        <View style={styles.card}>
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => setShowLogoutModal(true)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.rowLeft}>
-              <View style={styles.iconWrap}>
-                <Ionicons
-                  name="log-out-outline"
-                  size={17}
-                  color={theme.textPrimary}
-                />
-              </View>
-              <View style={styles.rowTextGroup}>
-                <Text style={styles.rowTitle}>
-                  {user.is_logged_in ? "Log Out" : "Exit Guest Session"}
-                </Text>
-                <Text style={styles.rowSubtitle}>
-                  Return to Welcome Landing Screen
-                </Text>
-              </View>
+        {/* SESSION & ACCOUNT (Shown when user is logged in) */}
+        {user.is_logged_in && (
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Session &amp; Account</Text>
             </View>
-            <Ionicons
-              name="chevron-forward"
-              size={18}
-              color={theme.textSecondary}
-            />
-          </TouchableOpacity>
-        </View>
+
+            <View style={styles.card}>
+              <TouchableOpacity
+                style={styles.row}
+                onPress={() => setShowLogoutModal(true)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowLeft}>
+                  <View style={styles.iconWrap}>
+                    <Ionicons
+                      name="log-out-outline"
+                      size={17}
+                      color={theme.textPrimary}
+                    />
+                  </View>
+                  <View style={styles.rowTextGroup}>
+                    <Text style={styles.rowTitle}>Log Out</Text>
+                    <Text style={styles.rowSubtitle}>
+                      Sign out of your account
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={theme.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
 
         {/* Footer */}
         <Text style={styles.footerText}>Li Xun</Text>
@@ -379,12 +381,8 @@ export default function SettingsScreen() {
       {/* Logout Confirmation Modal */}
       <ConfirmModal
         visible={showLogoutModal}
-        title={user.is_logged_in ? "Log Out" : "Exit Guest Session"}
-        message={
-          user.is_logged_in
-            ? "Are you sure you want to log out of your account?"
-            : "Are you sure you want to exit your guest session and return to the welcome screen?"
-        }
+        title="Log Out"
+        message="Are you sure you want to log out of your account?"
         icon="log-out-outline"
         confirmText="Log Out"
         isDestructive={true}

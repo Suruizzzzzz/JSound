@@ -19,8 +19,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
-import { setSetting } from '@/lib/database';
-import ConfirmModal from '@/components/ConfirmModal';
 import { createStyles } from '@/styles/profile.styles';
 
 function formatTotalTime(totalSeconds: number): string {
@@ -42,13 +40,11 @@ export default function ProfileScreen() {
   const user = useAuthStore((state) => state.user);
   const isSyncing = useAuthStore((state) => state.isSyncing);
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
-  const signOut = useAuthStore((state) => state.signOut);
   const setProfileName = useAuthStore((state) => state.setProfileName);
   const setProfileAvatar = useAuthStore((state) => state.setProfileAvatar);
 
   const tracks = usePlayerStore((state) => state.tracks);
 
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [showNameModal, setShowNameModal] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
@@ -146,17 +142,6 @@ export default function ProfileScreen() {
       setSyncFeedback('Cloud sync failed');
       setTimeout(() => setSyncFeedback(null), 3000);
     }
-  };
-
-  const handleConfirmLogout = async () => {
-    setShowLogoutModal(false);
-    await signOut();
-    try {
-      await setSetting('has_seen_welcome', 'false');
-    } catch {
-      // ignore
-    }
-    router.replace('/');
   };
 
   return (
@@ -331,35 +316,7 @@ export default function ProfileScreen() {
             )}
           </View>
         )}
-
-        {/* Bottom Session Action: Log Out */}
-        <TouchableOpacity
-          style={styles.logoutButton}
-          onPress={() => setShowLogoutModal(true)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="log-out-outline" size={18} color={theme.textSecondary} />
-          <Text style={styles.logoutButtonText}>
-            {user.is_logged_in ? 'Log Out' : 'Exit Guest & Return to Start'}
-          </Text>
-        </TouchableOpacity>
       </ScrollView>
-
-      {/* Custom Monochrome Logout Confirmation Modal */}
-      <ConfirmModal
-        visible={showLogoutModal}
-        title={user.is_logged_in ? 'Log Out' : 'Exit Guest Session'}
-        message={
-          user.is_logged_in
-            ? 'Are you sure you want to log out of your account?'
-            : 'Are you sure you want to exit your guest session and return to the welcome screen?'
-        }
-        icon="log-out-outline"
-        confirmText="Log Out"
-        isDestructive={true}
-        onConfirm={handleConfirmLogout}
-        onCancel={() => setShowLogoutModal(false)}
-      />
 
       {/* Edit Display Name Modal */}
       <Modal

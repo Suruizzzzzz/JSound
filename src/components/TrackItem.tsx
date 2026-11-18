@@ -21,6 +21,10 @@ interface TrackItemProps {
   downloadProgress?: number;
   onCancelDownload?: (id: string) => void;
   showDragHandle?: boolean;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  isFirst?: boolean;
+  isLast?: boolean;
   dragHandleProps?: any;
   onLongPress?: () => void;
   onAddToPlaylist?: (track: Track) => void;
@@ -40,6 +44,10 @@ export default function TrackItem({
   downloadProgress,
   onCancelDownload,
   showDragHandle,
+  onMoveUp,
+  onMoveDown,
+  isFirst,
+  isLast,
   dragHandleProps,
   onLongPress,
   onAddToPlaylist,
@@ -166,10 +174,36 @@ export default function TrackItem({
           </>
         )}
 
-        {/* Optional drag reorder handle */}
+        {/* Reorder Up / Down arrow buttons */}
         {showDragHandle && (
-          <View style={styles.dragHandle} {...dragHandleProps}>
-            <Ionicons name="reorder-two-outline" size={20} color={theme.textMuted} />
+          <View style={styles.reorderControlsRow}>
+            <TouchableOpacity
+              style={[styles.reorderArrowBtn, isFirst && styles.reorderArrowDisabled]}
+              onPress={onMoveUp}
+              disabled={isFirst}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Move track up"
+            >
+              <Ionicons
+                name="chevron-up"
+                size={16}
+                color={isFirst ? theme.textMuted : theme.textPrimary}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.reorderArrowBtn, isLast && styles.reorderArrowDisabled]}
+              onPress={onMoveDown}
+              disabled={isLast}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Move track down"
+            >
+              <Ionicons
+                name="chevron-down"
+                size={16}
+                color={isLast ? theme.textMuted : theme.textPrimary}
+              />
+            </TouchableOpacity>
           </View>
         )}
       </View>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Image,
-  PanResponder,
   Modal,
   TextInput,
   KeyboardAvoidingView,
@@ -31,6 +30,8 @@ import {
   removeTrackFromPlaylist,
   getPlaylistTracks,
   getPlaylistsContainingTrack,
+  getSetting,
+  setSetting,
 } from '@/lib/database';
 import TrackItem from '@/components/TrackItem';
 import ConfirmModal from '@/components/ConfirmModal';
@@ -38,6 +39,23 @@ import { Track, Playlist } from '@/types/music';
 import { createStyles } from '@/styles/index.styles';
 
 type LibraryTab = 'songs' | 'playlists';
+
+export type SortChoice = 'last_download' | 'first_download' | 'title_asc' | 'artist_asc' | 'custom';
+
+function getSortLabel(choice: SortChoice): string {
+  switch (choice) {
+    case 'last_download':
+      return 'Last Download';
+    case 'first_download':
+      return 'First Download';
+    case 'title_asc':
+      return 'Title A-Z';
+    case 'artist_asc':
+      return 'Artist A-Z';
+    case 'custom':
+      return 'Custom';
+  }
+}
 
 export default function LibraryScreen() {
   const tracks = usePlayerStore((state) => state.tracks);
@@ -68,7 +86,8 @@ export default function LibraryScreen() {
   const [isImporting, setIsImporting] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [isReordering, setIsReordering] = useState(false);
-  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [sortChoice, setSortChoice] = useState<SortChoice>('last_download');
+  const [showSortModal, setShowSortModal] = useState(false);
 
   // Playlists States
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
@@ -105,9 +124,32 @@ export default function LibraryScreen() {
     onConfirm: () => {},
   });
 
-  const dragStartIndexRef = useRef<number | null>(null);
-  const currentTargetRef = useRef<number | null>(null);
-  const currentOrderRef = useRef<Track[]>([]);
+  // Sort helper function
+  const applySort = useCallback((list: Track[], choice: SortChoice): Track[] => {
+    const sorted = [...list];
+    if (choice === 'last_download') {
+      return sorted.sort((a, b) => {
+        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return timeB - timeA;
+      });
+    } else if (choice === 'first_download') {
+      return sorted.sort((a, b) => {
+        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return timeA - timeB;
+      });
+    } else if (choice === 'title_asc') {
+      return sorted.sort((a, b) =>
+        (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' })
+      );
+    } else if (choice === 'artist_asc') {
+      return sorted.sort((a, b) =>
+        (a.artist || '').localeCompare(b.artist || '', undefined, { sensitivity: 'base' })
+      );
+    }
+    return sorted;
+  }, []);
 
   // Load playlists helper
   const loadPlaylists = useCallback(async () => {
@@ -119,14 +161,25 @@ export default function LibraryScreen() {
     }
   }, []);
 
+  // Auto-dismiss scan message after 4s
+  useEffect(() => {
+    if (scanMessage) {
+      const timer = setTimeout(() => setScanMessage(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [scanMessage]);
+
   // Initial load
   useEffect(() => {
     let isMounted = true;
     (async () => {
       try {
         const storedTracks = await getAllTracks();
+        const savedSort = ((await getSetting('library_sort')) as SortChoice) || 'last_download';
         if (isMounted) {
-          setTracks(storedTracks);
+          setSortChoice(savedSort);
+          const sorted = savedSort !== 'custom' ? applySort(storedTracks, savedSort) : storedTracks;
+          setTracks(sorted);
         }
       } catch (error) {
         console.warn('Failed to load tracks from DB:', error);
@@ -138,7 +191,7 @@ export default function LibraryScreen() {
     return () => {
       isMounted = false;
     };
-  }, [setTracks, loadPlaylists]);
+  }, [setTracks, loadPlaylists, applySort]);
 
   const handleScanMusic = async () => {
     if (isScanning || isImporting) return;
@@ -222,53 +275,35 @@ export default function LibraryScreen() {
     }
   };
 
-  // Reordering PanResponder for songs list
-  const getRowPanResponder = (index: number) => {
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 3,
-      onPanResponderGrant: () => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        setDraggingIndex(index);
-        dragStartIndexRef.current = index;
-        currentTargetRef.current = index;
-        currentOrderRef.current = [...tracks];
-      },
-      onPanResponderMove: (_, gesture) => {
-        const startIndex = dragStartIndexRef.current;
-        if (startIndex === null) return;
-        const ROW_HEIGHT = 64;
-        const offset = Math.round(gesture.dy / ROW_HEIGHT);
-        const newTarget = Math.max(
-          0,
-          Math.min(currentOrderRef.current.length - 1, startIndex + offset)
-        );
+  const handleSelectSort = async (choice: SortChoice) => {
+    setSortChoice(choice);
+    setShowSortModal(false);
+    await setSetting('library_sort', choice);
+    Haptics.selectionAsync();
 
-        if (newTarget !== currentTargetRef.current) {
-          currentTargetRef.current = newTarget;
-          Haptics.selectionAsync();
-          const updated = [...currentOrderRef.current];
-          const [moved] = updated.splice(startIndex, 1);
-          updated.splice(newTarget, 0, moved);
-          setTracks(updated);
-        }
-      },
-      onPanResponderRelease: async () => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        setDraggingIndex(null);
-        dragStartIndexRef.current = null;
-        currentTargetRef.current = null;
-        const currentTracks = usePlayerStore.getState().tracks;
-        await reorderTracks(currentTracks);
-      },
-      onPanResponderTerminate: async () => {
-        setDraggingIndex(null);
-        dragStartIndexRef.current = null;
-        currentTargetRef.current = null;
-        const currentTracks = usePlayerStore.getState().tracks;
-        await reorderTracks(currentTracks);
-      },
-    });
+    if (choice !== 'custom') {
+      const sorted = applySort(tracks, choice);
+      setTracks(sorted);
+      await reorderTracks(sorted);
+    }
+  };
+
+  const handleMoveTrack = async (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= tracks.length ||
+      toIndex >= tracks.length
+    )
+      return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const updated = [...tracks];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    setTracks(updated);
+    setSortChoice('custom');
+    await setSetting('library_sort', 'custom');
+    await reorderTracks(updated);
   };
 
   const handleRowLongPress = () => {
@@ -592,13 +627,11 @@ export default function LibraryScreen() {
   );
 
   // -------------------------------------------------------------
-  // Render: All Songs List Header
+  // Render: All Songs List Header Content
   // -------------------------------------------------------------
 
   const renderSongsHeader = () => (
-    <View style={styles.header}>
-      {renderTopBranding()}
-
+    <View style={{ marginTop: 2 }}>
       {/* Library Stats & Section Heading */}
       <View style={styles.libraryMetaRow}>
         <View>
@@ -608,31 +641,47 @@ export default function LibraryScreen() {
           </Text>
         </View>
 
-        {tracks.length > 1 && (
+        <View style={styles.headerRightButtonsRow}>
+          {/* Sort Button */}
           <TouchableOpacity
-            style={[styles.reorderToggleButton, isReordering && styles.reorderToggleActive]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setIsReordering((prev) => !prev);
-            }}
+            style={styles.sortButton}
+            onPress={() => setShowSortModal(true)}
             activeOpacity={0.7}
-            accessibilityLabel={isReordering ? 'Finish reordering' : 'Reorder library tracks'}
+            accessibilityLabel="Sort songs"
           >
-            <Ionicons
-              name={isReordering ? 'checkmark' : 'swap-vertical'}
-              size={15}
-              color={isReordering ? theme.onPrimary : theme.textSecondary}
-            />
-            <Text
-              style={[
-                styles.reorderToggleText,
-                isReordering && styles.reorderToggleTextActive,
-              ]}
-            >
-              {isReordering ? 'Done' : 'Reorder'}
+            <Ionicons name="filter-outline" size={13} color={theme.textSecondary} />
+            <Text style={styles.sortButtonText} numberOfLines={1}>
+              {getSortLabel(sortChoice)}
             </Text>
           </TouchableOpacity>
-        )}
+
+          {/* Reorder Toggle Button */}
+          {tracks.length > 1 && (
+            <TouchableOpacity
+              style={[styles.reorderToggleButton, isReordering && styles.reorderToggleActive]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setIsReordering((prev) => !prev);
+              }}
+              activeOpacity={0.7}
+              accessibilityLabel={isReordering ? 'Finish reordering' : 'Reorder library tracks'}
+            >
+              <Ionicons
+                name={isReordering ? 'checkmark' : 'swap-vertical'}
+                size={14}
+                color={isReordering ? theme.onPrimary : theme.textSecondary}
+              />
+              <Text
+                style={[
+                  styles.reorderToggleText,
+                  isReordering && styles.reorderToggleTextActive,
+                ]}
+              >
+                {isReordering ? 'Done' : 'Reorder'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Action Buttons: Scan Device Storage + Import Audio Files */}
@@ -684,30 +733,26 @@ export default function LibraryScreen() {
   // -------------------------------------------------------------
 
   const renderPlaylistsHeader = () => (
-    <View style={styles.header}>
-      {renderTopBranding()}
-
-      <View style={styles.playlistHeaderRow}>
-        <View>
-          <Text style={styles.libraryTitle}>Playlists</Text>
-          <Text style={styles.trackCountText}>
-            {playlists.length} custom collection{playlists.length === 1 ? '' : 's'}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.newPlaylistButton}
-          onPress={() => {
-            setNewPlaylistName('');
-            setNewPlaylistCoverUri(null);
-            setShowCreateModal(true);
-          }}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="add" size={16} color={theme.onPrimary} />
-          <Text style={styles.newPlaylistButtonText}>New Playlist</Text>
-        </TouchableOpacity>
+    <View style={styles.playlistHeaderRow}>
+      <View>
+        <Text style={styles.libraryTitle}>Playlists</Text>
+        <Text style={styles.trackCountText}>
+          {playlists.length} custom collection{playlists.length === 1 ? '' : 's'}
+        </Text>
       </View>
+
+      <TouchableOpacity
+        style={styles.newPlaylistButton}
+        onPress={() => {
+          setNewPlaylistName('');
+          setNewPlaylistCoverUri(null);
+          setShowCreateModal(true);
+        }}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="add" size={16} color={theme.onPrimary} />
+        <Text style={styles.newPlaylistButtonText}>New Playlist</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -858,7 +903,6 @@ export default function LibraryScreen() {
             </View>
           </TouchableOpacity>
         )}
-        ListHeaderComponent={renderPlaylistsHeader}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <View style={styles.emptyIconCircle}>
@@ -895,35 +939,36 @@ export default function LibraryScreen() {
         <Image source={logoSource} style={styles.watermarkImage} resizeMode="contain" />
       </View>
 
+      {/* FIXED TOP HEADER (Branding, Segmented Tabs & Section Header) */}
+      {(!selectedPlaylist || activeTab === 'songs') && (
+        <View style={styles.fixedHeader}>
+          {renderTopBranding()}
+          {activeTab === 'songs' && renderSongsHeader()}
+          {activeTab === 'playlists' && !selectedPlaylist && renderPlaylistsHeader()}
+        </View>
+      )}
+
       {/* Main Tab Views */}
       {activeTab === 'songs' ? (
         <FlatList
           data={tracks}
           keyExtractor={(item) => item.id}
-          renderItem={({ item, index }) => {
-            const isDragging = draggingIndex === index;
-            const panResponder = getRowPanResponder(index);
-
-            return (
-              <View
-                style={[
-                  styles.trackRowContainer,
-                  isDragging && styles.trackRowDragging,
-                ]}
-              >
-                <TrackItem
-                  track={item}
-                  queue={tracks}
-                  onDelete={handleDeleteTrack}
-                  showDragHandle={isReordering}
-                  dragHandleProps={panResponder.panHandlers}
-                  onLongPress={handleRowLongPress}
-                  onAddToPlaylist={handleOpenAddToPlaylist}
-                />
-              </View>
-            );
-          }}
-          ListHeaderComponent={renderSongsHeader}
+          renderItem={({ item, index }) => (
+            <View style={styles.trackRowContainer}>
+              <TrackItem
+                track={item}
+                queue={tracks}
+                onDelete={handleDeleteTrack}
+                showDragHandle={isReordering}
+                onMoveUp={() => handleMoveTrack(index, index - 1)}
+                onMoveDown={() => handleMoveTrack(index, index + 1)}
+                isFirst={index === 0}
+                isLast={index === tracks.length - 1}
+                onLongPress={handleRowLongPress}
+                onAddToPlaylist={handleOpenAddToPlaylist}
+              />
+            </View>
+          )}
           ListEmptyComponent={renderEmptySongsState}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
@@ -931,6 +976,145 @@ export default function LibraryScreen() {
       ) : (
         renderPlaylistsTab()
       )}
+
+      {/* Sort Choice Modal */}
+      <Modal
+        visible={showSortModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowSortModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSortModal(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>Sort Songs</Text>
+            <Text style={styles.modalSubtitle}>Choose how your offline songs are ordered</Text>
+
+            <TouchableOpacity
+              style={[
+                styles.sortOptionRow,
+                sortChoice === 'last_download' && styles.sortOptionRowActive,
+              ]}
+              onPress={() => handleSelectSort('last_download')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sortOptionLeft}>
+                <View style={styles.sortOptionIconWrap}>
+                  <Ionicons name="time-outline" size={17} color={theme.textPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.sortOptionText}>Last Download</Text>
+                  <Text style={styles.sortOptionSubtext}>Newest downloaded songs first</Text>
+                </View>
+              </View>
+              {sortChoice === 'last_download' && (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sortOptionRow,
+                sortChoice === 'first_download' && styles.sortOptionRowActive,
+              ]}
+              onPress={() => handleSelectSort('first_download')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sortOptionLeft}>
+                <View style={styles.sortOptionIconWrap}>
+                  <Ionicons name="calendar-outline" size={17} color={theme.textPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.sortOptionText}>First Download</Text>
+                  <Text style={styles.sortOptionSubtext}>Oldest downloaded songs first</Text>
+                </View>
+              </View>
+              {sortChoice === 'first_download' && (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sortOptionRow,
+                sortChoice === 'title_asc' && styles.sortOptionRowActive,
+              ]}
+              onPress={() => handleSelectSort('title_asc')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sortOptionLeft}>
+                <View style={styles.sortOptionIconWrap}>
+                  <Ionicons name="text-outline" size={17} color={theme.textPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.sortOptionText}>Title (A – Z)</Text>
+                  <Text style={styles.sortOptionSubtext}>Alphabetical by song title</Text>
+                </View>
+              </View>
+              {sortChoice === 'title_asc' && (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sortOptionRow,
+                sortChoice === 'artist_asc' && styles.sortOptionRowActive,
+              ]}
+              onPress={() => handleSelectSort('artist_asc')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sortOptionLeft}>
+                <View style={styles.sortOptionIconWrap}>
+                  <Ionicons name="person-outline" size={17} color={theme.textPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.sortOptionText}>Artist (A – Z)</Text>
+                  <Text style={styles.sortOptionSubtext}>Alphabetical by artist name</Text>
+                </View>
+              </View>
+              {sortChoice === 'artist_asc' && (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.sortOptionRow,
+                sortChoice === 'custom' && styles.sortOptionRowActive,
+              ]}
+              onPress={() => handleSelectSort('custom')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sortOptionLeft}>
+                <View style={styles.sortOptionIconWrap}>
+                  <Ionicons name="reorder-two-outline" size={17} color={theme.textPrimary} />
+                </View>
+                <View>
+                  <Text style={styles.sortOptionText}>Custom Order</Text>
+                  <Text style={styles.sortOptionSubtext}>Manually organized list</Text>
+                </View>
+              </View>
+              {sortChoice === 'custom' && (
+                <Ionicons name="checkmark-circle" size={20} color={theme.primary} />
+              )}
+            </TouchableOpacity>
+
+            <View style={[styles.modalButtons, { marginTop: 12 }]}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowSortModal(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalCancelText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Custom Monochrome Confirmation & Alert Modal */}
       <ConfirmModal
