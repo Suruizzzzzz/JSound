@@ -76,11 +76,11 @@ export default function SettingsScreen() {
 
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
-    await signOut();
     try {
+      await signOut();
       await setSetting('has_seen_welcome', 'false');
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn("Error during logout:", e);
     }
     router.replace("/");
   };
@@ -324,43 +324,41 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* SESSION & ACCOUNT (Shown when user is logged in) */}
-        {user.is_logged_in && (
-          <>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Session &amp; Account</Text>
-            </View>
+        {/* SESSION & ACCOUNT */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Session &amp; Account</Text>
+        </View>
 
-            <View style={styles.card}>
-              <TouchableOpacity
-                style={styles.row}
-                onPress={() => setShowLogoutModal(true)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.rowLeft}>
-                  <View style={styles.iconWrap}>
-                    <Ionicons
-                      name="log-out-outline"
-                      size={17}
-                      color={theme.textPrimary}
-                    />
-                  </View>
-                  <View style={styles.rowTextGroup}>
-                    <Text style={styles.rowTitle}>Log Out</Text>
-                    <Text style={styles.rowSubtitle}>
-                      Sign out of your account
-                    </Text>
-                  </View>
-                </View>
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => setShowLogoutModal(true)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowLeft}>
+              <View style={styles.iconWrap}>
                 <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={theme.textSecondary}
+                  name="log-out-outline"
+                  size={17}
+                  color={theme.textPrimary}
                 />
-              </TouchableOpacity>
+              </View>
+              <View style={styles.rowTextGroup}>
+                <Text style={styles.rowTitle}>Log Out</Text>
+                <Text style={styles.rowSubtitle}>
+                  {user.is_logged_in
+                    ? `Sign out of ${user.email || user.name}`
+                    : "Exit session & return to homepage"}
+                </Text>
+              </View>
             </View>
-          </>
-        )}
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.textSecondary}
+            />
+          </TouchableOpacity>
+        </View>
 
         {/* Footer */}
         <Text style={styles.footerText}>Li Xun</Text>
@@ -382,7 +380,11 @@ export default function SettingsScreen() {
       <ConfirmModal
         visible={showLogoutModal}
         title="Log Out"
-        message="Are you sure you want to log out of your account?"
+        message={
+          user.is_logged_in
+            ? "Are you sure you want to log out of your account? You will return to the homepage."
+            : "Are you sure you want to exit your session? You will return to the homepage."
+        }
         icon="log-out-outline"
         confirmText="Log Out"
         isDestructive={true}

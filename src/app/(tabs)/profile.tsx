@@ -19,6 +19,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
+import ConfirmModal from '@/components/ConfirmModal';
+import { setSetting } from '@/lib/database';
 import { createStyles } from '@/styles/profile.styles';
 
 function formatTotalTime(totalSeconds: number): string {
@@ -42,10 +44,12 @@ export default function ProfileScreen() {
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
   const setProfileName = useAuthStore((state) => state.setProfileName);
   const setProfileAvatar = useAuthStore((state) => state.setProfileAvatar);
+  const signOut = useAuthStore((state) => state.signOut);
 
   const tracks = usePlayerStore((state) => state.tracks);
 
   const [showNameModal, setShowNameModal] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
@@ -144,6 +148,17 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleConfirmLogout = async () => {
+    setShowLogoutModal(false);
+    try {
+      await signOut();
+      await setSetting('has_seen_welcome', 'false');
+      router.replace('/');
+    } catch (err) {
+      console.warn('Error during sign out:', err);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Subtle JS Monogram Background Watermark */}
@@ -218,7 +233,7 @@ export default function ProfileScreen() {
                 user.is_logged_in && styles.badgePillTextActive,
               ]}
             >
-              {user.is_logged_in ? 'PRO SYNC' : 'OFFLINE'}
+              {user.is_logged_in ? 'PRO SYNC' : 'OFFLINE GUEST'}
             </Text>
           </View>
         </View>
@@ -270,51 +285,63 @@ export default function ProfileScreen() {
             </View>
           </TouchableOpacity>
         ) : (
-          <View style={styles.accountCard}>
-            <View style={styles.accountRow}>
-              <View style={styles.accountLeft}>
-                <View style={styles.accountIconWrap}>
-                  <Ionicons
-                    name={user.sync_status === 'synced' ? 'cloud-done-outline' : 'cloud-upload-outline'}
-                    size={18}
-                    color={theme.textPrimary}
-                  />
+          <>
+            <View style={styles.accountCard}>
+              <View style={styles.accountRow}>
+                <View style={styles.accountLeft}>
+                  <View style={styles.accountIconWrap}>
+                    <Ionicons
+                      name={user.sync_status === 'synced' ? 'cloud-done-outline' : 'cloud-upload-outline'}
+                      size={18}
+                      color={theme.textPrimary}
+                    />
+                  </View>
+                  <View style={styles.accountTextGroup}>
+                    <Text style={styles.accountTitle}>Cloud Sync</Text>
+                    <Text style={styles.accountSubtitle}>
+                      {syncFeedback || (user.sync_status === 'synced' ? 'Playlists up to date' : 'Sync pending')}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.accountTextGroup}>
-                  <Text style={styles.accountTitle}>Cloud Sync</Text>
-                  <Text style={styles.accountSubtitle}>
-                    {syncFeedback || (user.sync_status === 'synced' ? 'Playlists up to date' : 'Sync pending')}
-                  </Text>
+
+                <View style={styles.syncStatusGroup}>
+                  <View style={styles.syncStatusPill}>
+                    <Text style={styles.syncStatusPillText}>
+                      {user.sync_status === 'synced' ? 'Synced' : 'Pending'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.syncNowButton}
+                    onPress={handleSyncCloud}
+                    disabled={isSyncing}
+                    activeOpacity={0.8}
+                  >
+                    {isSyncing ? (
+                      <ActivityIndicator size="small" color={theme.onPrimary} />
+                    ) : (
+                      <Text style={styles.syncNowButtonText}>Sync</Text>
+                    )}
+                  </TouchableOpacity>
                 </View>
               </View>
 
-              <View style={styles.syncStatusGroup}>
-                <View style={styles.syncStatusPill}>
-                  <Text style={styles.syncStatusPillText}>
-                    {user.sync_status === 'synced' ? 'Synced' : 'Pending'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.syncNowButton}
-                  onPress={handleSyncCloud}
-                  disabled={isSyncing}
-                  activeOpacity={0.8}
-                >
-                  {isSyncing ? (
-                    <ActivityIndicator size="small" color={theme.onPrimary} />
-                  ) : (
-                    <Text style={styles.syncNowButtonText}>Sync</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
+              {user.last_synced_at && (
+                <Text style={styles.syncTimestamp}>
+                  Last synchronized today at {user.last_synced_at}
+                </Text>
+              )}
             </View>
 
-            {user.last_synced_at && (
-              <Text style={styles.syncTimestamp}>
-                Last synchronized today at {user.last_synced_at}
-              </Text>
-            )}
-          </View>
+            {/* Sign Out Button */}
+            <TouchableOpacity
+              style={styles.logoutButton}
+              onPress={() => setShowLogoutModal(true)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="log-out-outline" size={18} color={theme.textSecondary} />
+              <Text style={styles.logoutButtonText}>Sign Out</Text>
+            </TouchableOpacity>
+          </>
         )}
       </ScrollView>
 
@@ -331,7 +358,7 @@ export default function ProfileScreen() {
         >
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Display Name</Text>
-            <Text style={styles.modalSubtitle}>Personalize your on-device listener profile</Text>
+            <Text style={styles.modalSubtitle}>Personalize your listener profile</Text>
             <TextInput
               style={styles.modalInput}
               value={editingName}
@@ -373,7 +400,7 @@ export default function ProfileScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Profile Avatar</Text>
             <Text style={styles.modalSubtitle}>
-              Change or remove your on-device listener photo
+              Change or remove your listener photo
             </Text>
 
             <TouchableOpacity
@@ -406,6 +433,18 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Sign Out Confirmation Modal */}
+      <ConfirmModal
+        visible={showLogoutModal}
+        title="Sign Out"
+        message="Are you sure you want to sign out? Your offline tracks and local playlists will remain safely stored on this device."
+        icon="log-out-outline"
+        confirmText="Sign Out"
+        isDestructive={true}
+        onConfirm={handleConfirmLogout}
+        onCancel={() => setShowLogoutModal(false)}
+      />
     </SafeAreaView>
   );
 }

@@ -136,14 +136,8 @@ export default function WelcomeScreen() {
     checkExistingWelcome();
   }, [router]);
 
-  const handleGetStarted = async () => {
-    setGuestSession(true);
-    try {
-      await setSetting('has_seen_welcome', 'true');
-    } catch (e) {
-      console.warn('Error setting welcome status:', e);
-    }
-    router.replace('/(tabs)');
+  const handleGetStarted = () => {
+    router.push('/auth');
   };
 
   const handleContinueGuest = async () => {
@@ -154,10 +148,6 @@ export default function WelcomeScreen() {
       console.warn('Error setting welcome status:', e);
     }
     router.replace('/(tabs)');
-  };
-
-  const handleSignIn = () => {
-    router.push('/auth');
   };
 
   return (
@@ -251,14 +241,6 @@ export default function WelcomeScreen() {
           activeOpacity={0.8}
         >
           <Text style={styles.secondaryButtonText}>Continue Offline (Guest)</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.textLinkButton}
-          onPress={handleSignIn}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.textLinkText}>Already have an account? Sign In</Text>
         </TouchableOpacity>
       </Animated.View>
     </SafeAreaView>
