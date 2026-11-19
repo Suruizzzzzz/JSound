@@ -10,10 +10,16 @@ import {
   updateAudioMetadata,
 } from '@/services/audioService';
 
+export interface PlaybackContext {
+  type: 'library' | 'playlist' | 'search';
+  name?: string;
+}
+
 interface PlayerState {
   tracks: Track[];
   currentTrack: Track | null;
   queue: Track[];
+  playbackContext: PlaybackContext | null;
   isPlaying: boolean;
   position: number; // in seconds
   duration: number; // in seconds
@@ -26,13 +32,18 @@ interface PlayerState {
 
   // Actions
   setTracks: (tracks: Track[]) => void;
-  setQueue: (queue: Track[]) => void;
+  setQueue: (queue: Track[], context?: PlaybackContext | null) => void;
+  setPlaybackContext: (context: PlaybackContext | null) => void;
   setModalOpen: (open: boolean) => void;
   toggleShuffle: () => void;
   cycleRepeatMode: () => void;
   setAutoPlay: (enabled: boolean) => void;
   setSleepTimer: (minutes: number | null) => void;
-  playTrack: (track: Track, customQueue?: Track[]) => Promise<void>;
+  playTrack: (
+    track: Track,
+    customQueue?: Track[],
+    context?: PlaybackContext | null
+  ) => Promise<void>;
   togglePlayPause: () => Promise<void>;
   playNext: () => Promise<void>;
   playPrevious: () => Promise<void>;
@@ -53,6 +64,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   tracks: [],
   currentTrack: null,
   queue: [],
+  playbackContext: { type: 'library', name: 'Local Offline Tracks' },
   isPlaying: false,
   position: 0,
   duration: 0,
@@ -65,7 +77,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setTracks: (tracks) => set({ tracks }),
 
-  setQueue: (queue) => set({ queue }),
+  setQueue: (queue, context) =>
+    set({ queue, ...(context !== undefined ? { playbackContext: context } : {}) }),
+
+  setPlaybackContext: (playbackContext) => set({ playbackContext }),
 
   setModalOpen: (isModalOpen) => set({ isModalOpen }),
 
@@ -105,12 +120,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }, minutes * 60 * 1000);
   },
 
-  playTrack: async (track: Track, customQueue?: Track[]) => {
+  playTrack: async (track: Track, customQueue?: Track[], context?: PlaybackContext | null) => {
     const state = get();
     const newQueue = customQueue || (state.queue.length > 0 ? state.queue : state.tracks);
     const resolvedQueue = newQueue.some((t) => t.id === track.id)
       ? newQueue
       : [track, ...newQueue];
+
+    if (!track.local_audio_uri && !track.is_streaming) {
+      console.warn('Track audio is not on device:', track.title);
+      const nextPlayable = resolvedQueue.find(
+        (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id
+      );
+      if (nextPlayable) {
+        await get().playTrack(nextPlayable, resolvedQueue, context);
+      } else {
+        set({ isPlaying: false, isLoading: false, currentTrack: track });
+      }
+      return;
+    }
 
     set({
       currentTrack: track,
@@ -119,6 +147,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       isPlaying: true, // Auto-play: proactively activate playing state
       position: 0,
       duration: track.duration || 0,
+      ...(context !== undefined ? { playbackContext: context } : {}),
     });
 
     try {

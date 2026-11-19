@@ -41,6 +41,9 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       user_id TEXT NOT NULL DEFAULT 'local_guest',
       name TEXT NOT NULL,
       cover_uri TEXT,
+      share_code TEXT,
+      sync_status TEXT DEFAULT 'synced',
+      sync_version INTEGER NOT NULL DEFAULT 1,
       is_synced INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
@@ -76,6 +79,24 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
 
   try {
     await db.execAsync('ALTER TABLE playlists ADD COLUMN cover_uri TEXT;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync('ALTER TABLE playlists ADD COLUMN share_code TEXT;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync('ALTER TABLE playlists ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync("ALTER TABLE playlists ADD COLUMN sync_status TEXT DEFAULT 'synced';");
   } catch {
     // Column already exists, safe to ignore
   }
@@ -180,28 +201,67 @@ export async function updatePlaylistCover(
 // Offline Playlist Helpers
 // -------------------------------------------------------------
 
+export async function updatePlaylistName(
+  playlistId: string,
+  name: string
+): Promise<void> {
+  const db = await getDatabase();
+  const cleanName = name.trim() || 'Untitled Playlist';
+  await db.runAsync(
+    'UPDATE playlists SET name = ?, sync_version = COALESCE(sync_version, 1) + 1 WHERE id = ?',
+    [cleanName, playlistId]
+  );
+}
+
+export async function setPlaylistShareCode(
+  playlistId: string,
+  shareCode: string | null
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'UPDATE playlists SET share_code = ? WHERE id = ?',
+    [shareCode, playlistId]
+  );
+}
+
 export async function createPlaylist(
   name: string,
-  coverUri?: string | null
+  coverUri?: string | null,
+  shareCode?: string | null,
+  customId?: string,
+  userId: string = 'local_guest'
 ): Promise<Playlist> {
   const db = await getDatabase();
-  const id = `pl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const id = customId || `pl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const now = new Date().toISOString();
   const cleanName = name.trim() || 'Untitled Playlist';
   const playlist: Playlist = {
     id,
-    user_id: 'local_guest',
+    user_id: userId,
     name: cleanName,
     cover_uri: coverUri || null,
+    share_code: shareCode || null,
+    sync_status: 'synced',
+    sync_version: 1,
     is_synced: 0,
     created_at: now,
     track_count: 0,
   };
 
   await db.runAsync(
-    `INSERT INTO playlists (id, user_id, name, cover_uri, is_synced, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [playlist.id, playlist.user_id, playlist.name, playlist.cover_uri ?? null, 0, playlist.created_at]
+    `INSERT OR REPLACE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      playlist.id,
+      playlist.user_id,
+      playlist.name,
+      playlist.cover_uri ?? null,
+      playlist.share_code ?? null,
+      playlist.sync_status ?? 'synced',
+      playlist.sync_version ?? 1,
+      0,
+      playlist.created_at,
+    ]
   );
 
   return playlist;
@@ -213,7 +273,6 @@ export async function getAllPlaylists(): Promise<Playlist[]> {
     `SELECT p.*, COUNT(pt.track_id) AS track_count
      FROM playlists p
      LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
-     WHERE p.user_id = 'local_guest'
      GROUP BY p.id
      ORDER BY p.created_at DESC`
   );
@@ -306,4 +365,36 @@ export async function getPlaylistsContainingTrack(trackId: string): Promise<stri
     [trackId]
   );
   return rows.map((r) => r.playlist_id);
+}
+
+export async function upsertPlaylistTrack(
+  playlistId: string,
+  trackId: string,
+  position: number = 0,
+  sortOrder: number = 0,
+  addedAt?: string | null
+): Promise<void> {
+  const db = await getDatabase();
+  const id = `pt_${playlistId}_${trackId}`;
+  const now = addedAt || new Date().toISOString();
+  await db.runAsync(
+    `INSERT OR REPLACE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, playlistId, trackId, position, sortOrder, now, now]
+  );
+}
+
+export async function getAllPlaylistTracksRaw(): Promise<
+  {
+    id: string;
+    playlist_id: string;
+    track_id: string;
+    position: number;
+    sort_order: number;
+    created_at: string;
+    added_at?: string;
+  }[]
+> {
+  const db = await getDatabase();
+  return await db.getAllAsync('SELECT * FROM playlist_tracks');
 }

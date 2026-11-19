@@ -30,9 +30,9 @@ export const createStyles = (theme: ThemeColors) =>
       paddingBottom: 150, // Clearance for MiniPlayer + Bottom Navigation
     },
     header: {
-      paddingHorizontal: 16,
+      paddingHorizontal: 20,
       paddingTop: 8,
-      paddingBottom: 10,
+      paddingBottom: 12,
     },
     headerTitle: {
       fontSize: 26,
@@ -41,17 +41,12 @@ export const createStyles = (theme: ThemeColors) =>
       marginBottom: 12,
       color: theme.textPrimary,
     },
-    searchRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
     searchBar: {
-      flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
-      borderRadius: 10,
-      paddingHorizontal: 12,
-      height: 46,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      height: 48,
       borderWidth: 1,
       backgroundColor: theme.surface,
       borderColor: theme.border,
@@ -68,76 +63,14 @@ export const createStyles = (theme: ThemeColors) =>
     clearButton: {
       padding: 4,
     },
-    searchSubmitButton: {
-      height: 46,
-      paddingHorizontal: 16,
-      borderRadius: 10,
-      backgroundColor: theme.primary,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginLeft: 8,
-    },
-    searchSubmitButtonDisabled: {
-      opacity: 0.5,
-    },
-    searchSubmitText: {
-      fontSize: 14,
-      fontWeight: '700',
-      color: theme.onPrimary,
-    },
-    // Filter pill row
-    filterPillRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      marginTop: 12,
-    },
-    filterPill: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingVertical: 7,
-      paddingHorizontal: 14,
-      borderRadius: 20,
-      borderWidth: 1,
-      backgroundColor: theme.surface,
-      borderColor: theme.border,
-      marginRight: 8,
-    },
-    filterPillActive: {
-      backgroundColor: theme.primary,
-      borderColor: theme.primary,
-    },
-    filterPillIcon: {
-      marginRight: 6,
-    },
-    filterPillText: {
-      fontSize: 13,
-      fontWeight: '600',
-      color: theme.textSecondary,
-    },
-    filterPillTextActive: {
-      color: theme.onPrimary,
-      fontWeight: '700',
-    },
-    metaRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginTop: 14,
-      paddingHorizontal: 4,
-    },
-    metaText: {
-      fontSize: 13,
-      fontWeight: '600',
-      color: theme.textSecondary,
-    },
     // Result Row UI
     resultRow: {
       flexDirection: 'row',
       alignItems: 'center',
       paddingVertical: 8,
       paddingHorizontal: 14,
-      borderRadius: 10,
-      marginHorizontal: 12,
+      borderRadius: 12,
+      marginHorizontal: 16,
       marginVertical: 3,
       backgroundColor: theme.surface,
       borderWidth: 1,

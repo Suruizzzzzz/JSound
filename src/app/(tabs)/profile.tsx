@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -20,7 +21,8 @@ import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
 import ConfirmModal from '@/components/ConfirmModal';
-import { setSetting } from '@/lib/database';
+import { getSetting, setSetting, getAllPlaylists } from '@/lib/database';
+import { runAutoDownloadSync } from '@/services/playlistSyncService';
 import { createStyles } from '@/styles/profile.styles';
 
 function formatTotalTime(totalSeconds: number): string {
@@ -48,10 +50,84 @@ export default function ProfileScreen() {
 
   const tracks = usePlayerStore((state) => state.tracks);
 
+  const [playlistCount, setPlaylistCount] = useState<number>(0);
+  const [storageUsageMb, setStorageUsageMb] = useState<string | null>(null);
+
   const [showNameModal, setShowNameModal] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(true);
+
+  // Load playlist count from local database
+  useEffect(() => {
+    let isMounted = true;
+    async function loadPlaylistCount() {
+      try {
+        const all = await getAllPlaylists();
+        if (isMounted) {
+          setPlaylistCount(all.length);
+        }
+      } catch (err) {
+        console.warn('Failed to load playlist count:', err);
+      }
+    }
+    loadPlaylistCount();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Calculate local audio disk storage footprint in MB
+  useEffect(() => {
+    let isMounted = true;
+    async function calculateStorage() {
+      try {
+        let totalBytes = 0;
+        for (const t of tracks) {
+          if (t.local_audio_uri && !t.local_audio_uri.startsWith('http')) {
+            try {
+              const info = await FileSystem.getInfoAsync(t.local_audio_uri);
+              if (info.exists && typeof info.size === 'number') {
+                totalBytes += info.size;
+              }
+            } catch {
+              // Non-fatal if specific file is inaccessible
+            }
+          }
+        }
+        if (isMounted) {
+          const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+          setStorageUsageMb(mb);
+        }
+      } catch (err) {
+        console.warn('Failed to calculate local audio storage footprint:', err);
+        if (isMounted) {
+          setStorageUsageMb('0.0');
+        }
+      }
+    }
+    calculateStorage();
+    return () => {
+      isMounted = false;
+    };
+  }, [tracks]);
+
+  useEffect(() => {
+    async function loadAutoDownloadSetting() {
+      const saved = await getSetting('auto_download_synced', 'true');
+      setAutoDownloadEnabled(saved === 'true');
+    }
+    loadAutoDownloadSetting();
+  }, []);
+
+  const handleToggleAutoDownload = async (val: boolean) => {
+    setAutoDownloadEnabled(val);
+    await setSetting('auto_download_synced', val ? 'true' : 'false');
+    if (val) {
+      runAutoDownloadSync().catch(() => {});
+    }
+  };
 
   // Theme-adaptive logo
   const logoSource = useMemo(
@@ -199,7 +275,7 @@ export default function ProfileScreen() {
               <Image source={{ uri: user.avatar_url }} style={styles.avatarImage} />
             ) : (
               <Text style={styles.avatarInitial}>
-                {(user.name || 'J').charAt(0).toUpperCase()}
+                {(user.name || 'J').trim().charAt(0).toUpperCase()}
               </Text>
             )}
             <View style={styles.avatarEditBadge}>
@@ -238,25 +314,36 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* 3-Column Stats Strip (Minimalist, zero developer jargon) */}
+        {/* 3-Column Stats Strip (Tracks | Playlists | Listening Time) + Offline Storage Footprint */}
         <View style={styles.statsCard}>
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{tracks.length}</Text>
-            <Text style={styles.statLabel}>Tracks</Text>
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{tracks.length}</Text>
+              <Text style={styles.statLabel}>Tracks</Text>
+            </View>
+
+            <View style={styles.statDivider} />
+
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{playlistCount}</Text>
+              <Text style={styles.statLabel}>Playlists</Text>
+            </View>
+
+            <View style={styles.statDivider} />
+
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{formatTotalTime(totalDuration)}</Text>
+              <Text style={styles.statLabel}>Listening Time</Text>
+            </View>
           </View>
 
-          <View style={styles.statDivider} />
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>{formatTotalTime(totalDuration)}</Text>
-            <Text style={styles.statLabel}>Listening Time</Text>
-          </View>
-
-          <View style={styles.statDivider} />
-
-          <View style={styles.statItem}>
-            <Text style={styles.statValue}>On-Device</Text>
-            <Text style={styles.statLabel}>Library</Text>
+          {/* Subtle Offline Storage Footprint Indicator */}
+          <View style={styles.storageIndicatorRow}>
+            <Ionicons name="hardware-chip-outline" size={14} color={theme.textSecondary} />
+            <Text style={styles.storageIndicatorText}>Offline Storage:</Text>
+            <Text style={styles.storageIndicatorValue}>
+              {storageUsageMb !== null ? `${storageUsageMb} MB on device` : 'Calculating...'}
+            </Text>
           </View>
         </View>
 
@@ -330,6 +417,30 @@ export default function ProfileScreen() {
                   Last synchronized today at {user.last_synced_at}
                 </Text>
               )}
+
+              <View style={styles.accountDivider} />
+
+              {/* Auto-Download Synced Tracks Toggle */}
+              <View style={styles.autoDownloadRow}>
+                <View style={styles.accountLeft}>
+                  <View style={styles.accountIconWrap}>
+                    <Ionicons name="cloud-download-outline" size={18} color={theme.textPrimary} />
+                  </View>
+                  <View style={styles.accountTextGroup}>
+                    <Text style={styles.accountTitle}>Auto-Download Synced Tracks</Text>
+                    <Text style={styles.accountSubtitle}>
+                      Download missing audio in background
+                    </Text>
+                  </View>
+                </View>
+
+                <Switch
+                  value={autoDownloadEnabled}
+                  onValueChange={handleToggleAutoDownload}
+                  trackColor={{ false: theme.border, true: theme.primary }}
+                  thumbColor={theme.onPrimary}
+                />
+              </View>
             </View>
 
             {/* Sign Out Button */}

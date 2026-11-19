@@ -51,12 +51,12 @@ export const createStyles = (theme: ThemeColors) =>
     },
     identitySection: {
       alignItems: 'center',
-      marginBottom: 28,
+      marginBottom: 24,
     },
     avatarCircle: {
-      width: 76,
-      height: 76,
-      borderRadius: 38,
+      width: 80,
+      height: 80,
+      borderRadius: 40,
       backgroundColor: theme.surfaceElevated,
       borderColor: theme.border,
       borderWidth: 1,
@@ -66,14 +66,16 @@ export const createStyles = (theme: ThemeColors) =>
       position: 'relative',
     },
     avatarImage: {
-      width: 74,
-      height: 74,
-      borderRadius: 37,
+      width: 78,
+      height: 78,
+      borderRadius: 39,
     },
     avatarInitial: {
-      fontSize: 28,
-      fontWeight: '700',
+      fontSize: 32,
+      fontWeight: '800',
       color: theme.textPrimary,
+      textAlign: 'center',
+      includeFontPadding: false,
     },
     avatarEditBadge: {
       position: 'absolute',
@@ -136,15 +138,18 @@ export const createStyles = (theme: ThemeColors) =>
       borderColor: theme.border,
       borderWidth: 1,
       borderRadius: 14,
-      paddingVertical: 18,
+      paddingVertical: 16,
       paddingHorizontal: 16,
+      marginBottom: 24,
+    },
+    statsRow: {
       flexDirection: 'row',
       justifyContent: 'space-around',
       alignItems: 'center',
-      marginBottom: 28,
     },
     statItem: {
       alignItems: 'center',
+      flex: 1,
     },
     statValue: {
       fontSize: 18,
@@ -163,6 +168,26 @@ export const createStyles = (theme: ThemeColors) =>
       height: 28,
       backgroundColor: theme.border,
     },
+    storageIndicatorRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      marginTop: 14,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+    },
+    storageIndicatorText: {
+      fontSize: 12,
+      fontWeight: '500',
+      color: theme.textSecondary,
+    },
+    storageIndicatorValue: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: theme.textPrimary,
+    },
     sectionTitle: {
       fontSize: 12,
       fontWeight: '700',
@@ -177,7 +202,7 @@ export const createStyles = (theme: ThemeColors) =>
       borderWidth: 1,
       borderRadius: 14,
       padding: 16,
-      marginBottom: 28,
+      marginBottom: 24,
     },
     accountRow: {
       flexDirection: 'row',
@@ -250,6 +275,16 @@ export const createStyles = (theme: ThemeColors) =>
       paddingTop: 10,
       borderTopWidth: 1,
       borderTopColor: theme.border,
+    },
+    accountDivider: {
+      height: 1,
+      backgroundColor: theme.border,
+      marginVertical: 14,
+    },
+    autoDownloadRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
     },
     logoutButton: {
       flexDirection: 'row',

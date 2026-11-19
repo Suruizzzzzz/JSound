@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { getSetting, setSetting } from '@/lib/database';
 import { supabase } from '@/services/supabase';
 import { authService } from '@/services/authService';
+import { syncPlaylistsToCloud as syncWithCloud } from '@/services/playlistSyncService';
 
 export interface UserProfile {
   id: string;
@@ -31,7 +32,11 @@ export interface AuthState {
   initProfile: () => Promise<void>;
   setProfileName: (name: string) => Promise<void>;
   setProfileAvatar: (avatarUri: string | null) => Promise<void>;
-  signUp: (email: string, password: string, displayName?: string) => Promise<{ needsConfirmation: boolean }>;
+  signUp: (
+    email: string,
+    password: string,
+    displayName?: string
+  ) => Promise<{ needsConfirmation: boolean; identityCollision?: boolean; existingProvider?: string }>;
   resendConfirmation: (email: string) => Promise<void>;
   checkEmailConfirmed: (params: { email: string; password: string }) => Promise<void>;
   signInWithEmail: (email: string, password?: string) => Promise<void>;
@@ -106,20 +111,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const session = await authService.getSession();
       if (session?.user) {
         const sbUser = session.user;
+        const savedLocalName = await getSetting('profile_display_name', null);
+        const savedLocalAvatar = await getSetting('profile_avatar_uri', null);
+
         let displayName =
+          savedLocalName ||
           sbUser.user_metadata?.display_name ||
           sbUser.user_metadata?.full_name ||
           (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-        let avatarUrl = sbUser.user_metadata?.avatar_url || null;
+        let avatarUrl = savedLocalAvatar || sbUser.user_metadata?.avatar_url || null;
 
         try {
           const remoteProfile = await authService.getProfile(sbUser.id);
           if (remoteProfile) {
-            if (remoteProfile.display_name) displayName = remoteProfile.display_name;
-            if (remoteProfile.avatar_url) avatarUrl = remoteProfile.avatar_url;
+            if (remoteProfile.display_name) {
+              displayName = remoteProfile.display_name;
+              await setSetting('profile_display_name', displayName);
+            }
+            if (remoteProfile.avatar_url) {
+              if (remoteProfile.avatar_url.startsWith('http')) {
+                const localCached = await authService.downloadAndCacheAvatar(remoteProfile.avatar_url, sbUser.id);
+                avatarUrl = localCached;
+                await setSetting('profile_avatar_uri', localCached);
+              } else {
+                avatarUrl = remoteProfile.avatar_url;
+              }
+            } else if (remoteProfile.avatar_url === null) {
+              avatarUrl = null;
+              await setSetting('profile_avatar_uri', '');
+            }
           }
         } catch {
-          // fallback to metadata
+          // offline fallback: use local cached settings
         }
 
         set({
@@ -164,8 +187,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (currentUser.is_logged_in && currentUser.id !== 'local_guest') {
       try {
         await authService.updateProfile(currentUser.id, { display_name: cleanName });
+        await setSetting('pending_profile_name_sync', '');
       } catch (remoteErr) {
-        console.warn('Failed to persist profile name to Supabase:', remoteErr);
+        console.warn('Offline: queued profile name update for next sync:', remoteErr);
+        await setSetting('pending_profile_name_sync', cleanName);
       }
     }
 
@@ -190,10 +215,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     const currentUser = get().user;
     if (currentUser.is_logged_in && currentUser.id !== 'local_guest') {
-      try {
-        await authService.updateProfile(currentUser.id, { avatar_url: avatarUri });
-      } catch (remoteErr) {
-        console.warn('Failed to persist avatar to Supabase:', remoteErr);
+      if (avatarUri) {
+        try {
+          const publicUrl = await authService.uploadAvatar(currentUser.id, avatarUri);
+          await authService.updateProfile(currentUser.id, { avatar_url: publicUrl });
+          await setSetting('pending_avatar_sync', '');
+        } catch (remoteErr) {
+          console.warn('Offline: queued avatar upload for next sync:', remoteErr);
+          await setSetting('pending_avatar_sync', avatarUri);
+        }
+      } else {
+        try {
+          await authService.removeAvatar(currentUser.id);
+          await authService.updateProfile(currentUser.id, { avatar_url: null });
+          await setSetting('pending_avatar_sync', '');
+        } catch (remoteErr) {
+          console.warn('Failed to remove avatar from Supabase:', remoteErr);
+        }
       }
     }
 
@@ -207,6 +245,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signUp: async (email: string, password: string, displayName?: string) => {
     const data = await authService.signUp({ email, password, displayName });
+    if (data.identityCollision) {
+      return { needsConfirmation: false, identityCollision: true, existingProvider: data.existingProvider || 'google' };
+    }
     if (data.session?.user) {
       const sbUser = data.session.user;
       const displayNameResolved =
@@ -227,9 +268,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
-      return { needsConfirmation: false };
+      return { needsConfirmation: false, identityCollision: false };
     }
-    return { needsConfirmation: true };
+    return { needsConfirmation: true, identityCollision: false };
   },
 
   resendConfirmation: async (email: string) => {
@@ -362,16 +403,92 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   syncPlaylistsToCloud: async () => {
     set({ isSyncing: true });
-    // Simulated cloud sync duration
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    set((state) => ({
-      isSyncing: false,
-      user: {
-        ...state.user,
-        sync_status: 'synced',
-        last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      },
-    }));
+    try {
+      const currentUser = get().user;
+      if (currentUser.is_logged_in && currentUser.id !== 'local_guest') {
+        // 1. Flush any pending offline profile updates to Supabase
+        const pendingName = await getSetting('pending_profile_name_sync', '');
+        if (pendingName) {
+          try {
+            await authService.updateProfile(currentUser.id, { display_name: pendingName });
+            await setSetting('pending_profile_name_sync', '');
+          } catch (e) {
+            console.warn('Pending name sync retry warning:', e);
+          }
+        }
+
+        const pendingAvatar = await getSetting('pending_avatar_sync', '');
+        if (pendingAvatar) {
+          try {
+            const publicUrl = await authService.uploadAvatar(currentUser.id, pendingAvatar);
+            await authService.updateProfile(currentUser.id, { avatar_url: publicUrl });
+            await setSetting('pending_avatar_sync', '');
+          } catch (e) {
+            console.warn('Pending avatar sync retry warning:', e);
+          }
+        }
+
+        // 2. Pull latest remote profile and cache avatar locally
+        try {
+          const remoteProfile = await authService.getProfile(currentUser.id);
+          if (remoteProfile) {
+            let updatedName = currentUser.name;
+            let updatedAvatar = currentUser.avatar_url;
+
+            if (remoteProfile.display_name) {
+              updatedName = remoteProfile.display_name;
+              await setSetting('profile_display_name', updatedName);
+            }
+            if (remoteProfile.avatar_url) {
+              if (remoteProfile.avatar_url.startsWith('http')) {
+                const cachedUri = await authService.downloadAndCacheAvatar(remoteProfile.avatar_url, currentUser.id);
+                updatedAvatar = cachedUri;
+                await setSetting('profile_avatar_uri', cachedUri);
+              } else {
+                updatedAvatar = remoteProfile.avatar_url;
+              }
+            } else if (remoteProfile.avatar_url === null) {
+              updatedAvatar = null;
+              await setSetting('profile_avatar_uri', '');
+            }
+
+            set((state) => ({
+              user: {
+                ...state.user,
+                name: updatedName,
+                avatar_url: updatedAvatar,
+              },
+            }));
+          }
+        } catch (e) {
+          console.warn('Profile refresh during sync warning:', e);
+        }
+      }
+
+      // 3. Two-way playlists & tracks cloud sync
+      const res = await syncWithCloud();
+      if (res.success) {
+        set((state) => ({
+          isSyncing: false,
+          user: {
+            ...state.user,
+            sync_status: 'synced',
+            last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        }));
+      } else {
+        set((state) => ({
+          isSyncing: false,
+          user: {
+            ...state.user,
+            sync_status: state.user.is_logged_in ? 'pending' : 'offline',
+          },
+        }));
+      }
+    } catch (e) {
+      console.warn('Sync playlists error:', e);
+      set({ isSyncing: false });
+    }
   },
 
   signOut: async () => {

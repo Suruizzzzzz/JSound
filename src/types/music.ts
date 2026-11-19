@@ -20,6 +20,9 @@ export interface Playlist {
   user_id: string;
   name: string;
   cover_uri?: string | null;
+  share_code?: string | null;
+  sync_status?: string | null;
+  sync_version?: number;
   is_synced: number; // 0 or 1
   created_at: string;
   track_count?: number;

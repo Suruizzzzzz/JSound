@@ -8,6 +8,7 @@ import {
   Animated,
   Image,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -42,6 +43,7 @@ export default function AuthScreen() {
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [isCheckEmailView, setIsCheckEmailView] = useState(false);
+  const [showCollisionModal, setShowCollisionModal] = useState(false);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -119,6 +121,10 @@ export default function AuthScreen() {
       } else {
         // Register mode: create account and send confirmation link
         const res = await signUp(cleanEmail, password, fullName.trim());
+        if (res.identityCollision) {
+          setShowCollisionModal(true);
+          return;
+        }
         if (res.needsConfirmation) {
           animateFormTransition(() => {
             setIsCheckEmailView(true);
@@ -553,6 +559,51 @@ export default function AuthScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* Account Already Exists Collision Modal */}
+      <Modal
+        visible={showCollisionModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowCollisionModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowCollisionModal(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <View style={styles.collisionIconBadge}>
+              <Ionicons name="logo-google" size={26} color={theme.textPrimary} />
+            </View>
+
+            <Text style={styles.collisionModalTitle}>Account Already Exists</Text>
+            <Text style={styles.collisionModalSubtitle}>
+              This email is already linked to a Google sign-in. Please use &quot;Continue with Google&quot; to access your account.
+            </Text>
+
+            <TouchableOpacity
+              style={styles.collisionGoogleButton}
+              onPress={() => {
+                setShowCollisionModal(false);
+                handleGoogleSignIn();
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="logo-google" size={17} color={theme.onPrimary} />
+              <Text style={styles.collisionGoogleButtonText}>Continue with Google</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.collisionCancelButton}
+              onPress={() => setShowCollisionModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.collisionCancelButtonText}>Cancel / Use Another Email</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }

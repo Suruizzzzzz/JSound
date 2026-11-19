@@ -9,8 +9,9 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { searchLocalTracks, getAllTracks, deleteTrack as removeTrackFromDb } from '@/repositories/trackRepository';
+import { getAllTracks } from '@/repositories/trackRepository';
 import {
   searchOnlineTracks,
   downloadTrackToOfflineLibrary,
@@ -20,13 +21,12 @@ import {
 } from '@/services/musicDownloadService';
 import { Track } from '@/types/music';
 import { resumeAudio } from '@/services/audioService';
-import TrackItem from '@/components/TrackItem';
 import ConfirmModal from '@/components/ConfirmModal';
+import { setSetting } from '@/lib/database';
 import { usePlayerStore } from '@/store/playerStore';
+import { registerGuideTarget, useGuideStore } from '@/store/guideStore';
 import { useThemeStore } from '@/store/themeStore';
 import { createStyles } from '@/styles/search.styles';
-
-type SearchCatalogMode = 'online' | 'offline';
 
 function formatDuration(seconds: number): string {
   if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
@@ -36,6 +36,7 @@ function formatDuration(seconds: number): string {
 }
 
 export default function SearchScreen() {
+  const router = useRouter();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -46,7 +47,6 @@ export default function SearchScreen() {
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const playTrack = usePlayerStore((state) => state.playTrack);
   const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
-  const removeTrackFromStore = usePlayerStore((state) => state.removeTrack);
 
   // Theme-adaptive logo for watermark
   const logoSource = useMemo(
@@ -58,10 +58,8 @@ export default function SearchScreen() {
   );
 
   const [query, setQuery] = useState('');
-  const [catalogMode, setCatalogMode] = useState<SearchCatalogMode>('online');
   const [isSearching, setIsSearching] = useState(false);
   const [onlineResults, setOnlineResults] = useState<OnlineTrackResult[]>([]);
-  const [offlineResults, setOfflineResults] = useState<Track[]>([]);
   const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
   const [resolvingTrackId, setResolvingTrackId] = useState<string | null>(null);
 
@@ -96,14 +94,6 @@ export default function SearchScreen() {
     };
   }, []);
 
-  // Derived filtered tracks according to query
-  const displayedOfflineTracks = useMemo(() => {
-    if (!query.trim()) {
-      return offlineTracks;
-    }
-    return offlineResults;
-  }, [query, offlineTracks, offlineResults]);
-
   const displayedOnlineTracks = useMemo(() => {
     if (!query.trim()) {
       return [];
@@ -112,6 +102,16 @@ export default function SearchScreen() {
   }, [query, onlineResults]);
 
   // Debounced search effect
+  const handleResultsLoaded = (results: OnlineTrackResult[]) => {
+    setOnlineResults(results);
+    if (results.length > 0) {
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 4) {
+        guideState.setStep(5);
+      }
+    }
+  };
+
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
@@ -120,98 +120,64 @@ export default function SearchScreen() {
 
     let isCancelled = false;
 
-    if (catalogMode === 'offline') {
-      const fetchOffline = async () => {
-        setIsSearching(true);
-        try {
-          const matched = await searchLocalTracks(trimmed);
-          if (!isCancelled) {
-            setOfflineResults(matched);
-          }
-        } catch (err) {
-          console.warn('Offline search error:', err);
-        } finally {
-          if (!isCancelled) {
-            setIsSearching(false);
-          }
+    const fetchOnline = async () => {
+      setIsSearching(true);
+      try {
+        const results = await searchOnlineTracks(trimmed);
+        if (!isCancelled) {
+          handleResultsLoaded(results);
         }
-      };
-
-      const timer = setTimeout(fetchOffline, 150);
-      return () => {
-        isCancelled = true;
-        clearTimeout(timer);
-      };
-    } else {
-      const fetchOnline = async () => {
-        setIsSearching(true);
-        try {
-          const results = await searchOnlineTracks(trimmed);
-          if (!isCancelled) {
-            setOnlineResults(results);
-          }
-        } catch (err: any) {
-          if (!isCancelled) {
-            setModalConfig({
-              visible: true,
-              title: 'Search Catalog Error',
-              message:
-                err?.message ||
-                'Unable to retrieve tracks from the online catalog. Please verify your connection.',
-              icon: 'cloud-offline-outline',
-            });
-          }
-        } finally {
-          if (!isCancelled) {
-            setIsSearching(false);
-          }
+      } catch (err: any) {
+        if (!isCancelled) {
+          setModalConfig({
+            visible: true,
+            title: 'Search Catalog Error',
+            message:
+              err?.message ||
+              'Unable to retrieve tracks from the online catalog. Please verify your connection.',
+            icon: 'cloud-offline-outline',
+          });
         }
-      };
+      } finally {
+        if (!isCancelled) {
+          setIsSearching(false);
+        }
+      }
+    };
 
-      const timer = setTimeout(fetchOnline, 400);
-      return () => {
-        isCancelled = true;
-        clearTimeout(timer);
-      };
-    }
-  }, [query, catalogMode]);
+    const timer = setTimeout(fetchOnline, 400);
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
 
-  // Explicit Search button submission
+  // Explicit Search submission
   const handleExplicitSearch = async () => {
     const trimmed = query.trim();
     if (!trimmed) return;
     setIsSearching(true);
 
-    if (catalogMode === 'online') {
-      try {
-        const results = await searchOnlineTracks(trimmed);
-        setOnlineResults(results);
-      } catch (err: any) {
-        setModalConfig({
-          visible: true,
-          title: 'Search Catalog Error',
-          message:
-            err?.message ||
-            'Unable to retrieve tracks from the online catalog. Please verify your connection.',
-          icon: 'cloud-offline-outline',
-        });
-      } finally {
-        setIsSearching(false);
-      }
-    } else {
-      try {
-        const matched = await searchLocalTracks(trimmed);
-        setOfflineResults(matched);
-      } catch (err) {
-        console.warn('Local search error:', err);
-      } finally {
-        setIsSearching(false);
-      }
+    try {
+      const results = await searchOnlineTracks(trimmed);
+      handleResultsLoaded(results);
+    } catch (err: any) {
+      setModalConfig({
+        visible: true,
+        title: 'Search Catalog Error',
+        message:
+          err?.message ||
+          'Unable to retrieve tracks from the online catalog. Please verify your connection.',
+        icon: 'cloud-offline-outline',
+      });
+    } finally {
+      setIsSearching(false);
     }
   };
 
   const clearSearch = () => {
     setQuery('');
+    setIsSearching(false);
   };
 
   // Find if an online item has already been downloaded to SQLite
@@ -247,7 +213,7 @@ export default function SearchScreen() {
           await resumeAudio();
         }
       } else {
-        await playTrack(savedTrack, offlineTracks);
+        await playTrack(savedTrack, offlineTracks, { type: 'library', name: 'Local Offline Tracks' });
       }
       return;
     }
@@ -286,7 +252,7 @@ export default function SearchScreen() {
         headers: streamResult.headers,
       };
 
-      await playTrack(tempTrack);
+      await playTrack(tempTrack, [tempTrack], { type: 'search', name: 'Online Stream' });
     } catch (err: any) {
       setModalConfig({
         visible: true,
@@ -311,6 +277,27 @@ export default function SearchScreen() {
       await downloadTrackToOfflineLibrary(track, (pct) => {
         setDownloadingMap((prev) => ({ ...prev, [track.id]: pct }));
       });
+
+      // Walkthrough Step 6: When download completes, sort library by Last Download,
+      // navigate back to Library, and spotlight the newly downloaded track at Step 7!
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 5) {
+        try {
+          const allTracks = await getAllTracks();
+          const sorted = [...allTracks].sort((a, b) => {
+            const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return timeB - timeA;
+          });
+          usePlayerStore.getState().setTracks(sorted);
+          await setSetting('library_sort', 'last_download');
+        } catch (sortErr) {
+          console.warn('Failed to sort tracks on guide completion:', sortErr);
+        }
+
+        guideState.setStep(6);
+        router.navigate('/(tabs)');
+      }
     } catch (error: any) {
       setModalConfig({
         visible: true,
@@ -342,19 +329,14 @@ export default function SearchScreen() {
     }
   };
 
-  // Delete local track handler for offline list
-  const handleDeleteTrack = async (id: string) => {
-    try {
-      await removeTrackFromDb(id);
-      await removeTrackFromStore(id);
-      setOfflineResults((prev) => prev.filter((t) => t.id !== id));
-    } catch (error) {
-      console.warn('Failed to delete track:', error);
-    }
-  };
-
   // Render individual online track result row
-  const renderOnlineTrackItem = ({ item }: { item: OnlineTrackResult }) => {
+  const renderOnlineTrackItem = ({
+    item,
+    index,
+  }: {
+    item: OnlineTrackResult;
+    index: number;
+  }) => {
     const savedTrack = findSavedTrack(item);
     const streamTrackId = `stream_${item.source}_${item.id}`;
     const isCurrentTrack =
@@ -473,18 +455,27 @@ export default function SearchScreen() {
             </TouchableOpacity>
           ) : (
             // State 1: Independent Download icon button (idle)
-            <TouchableOpacity
-              style={styles.downloadButton}
-              onPress={() => handleDownload(item)}
-              activeOpacity={0.7}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            <View
+              ref={(r) => {
+                if (index === 0) {
+                  registerGuideTarget('first_search_download_btn', r);
+                }
+              }}
+              collapsable={false}
             >
-              <Ionicons
-                name="cloud-download-outline"
-                size={18}
-                color={theme.textPrimary}
-              />
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.downloadButton}
+                onPress={() => handleDownload(item)}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons
+                  name="cloud-download-outline"
+                  size={18}
+                  color={theme.textPrimary}
+                />
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
@@ -504,46 +495,21 @@ export default function SearchScreen() {
       );
     }
 
-    if (catalogMode === 'online') {
-      return (
-        <View style={styles.emptyContainer}>
-          <Ionicons
-            name={query.trim() ? 'search-outline' : 'cloud-download-outline'}
-            size={52}
-            color={theme.textMuted}
-          />
-          <Text style={styles.emptyTitle}>
-            {query.trim() ? 'No online tracks found' : 'Instant Stream & Download'}
-          </Text>
-          <Text style={styles.emptySubtitle}>
-            {query.trim()
-              ? `We couldn't find any songs matching "${query}". Check the title or artist name.`
-              : 'Tap any track to stream instantly, or use the download button for offline listening.'}
-          </Text>
-        </View>
-      );
-    }
-
     return (
       <View style={styles.emptyContainer}>
-        <Ionicons name="musical-notes-outline" size={52} color={theme.textMuted} />
+        <Ionicons
+          name={query.trim() ? 'search-outline' : 'cloud-download-outline'}
+          size={52}
+          color={theme.textMuted}
+        />
         <Text style={styles.emptyTitle}>
-          {query.trim() ? 'No offline matches found' : 'Your offline library is empty'}
+          {query.trim() ? 'No online tracks found' : 'Instant Stream & Download'}
         </Text>
         <Text style={styles.emptySubtitle}>
           {query.trim()
-            ? `We couldn't find any songs or artists matching "${query}" on your device.`
-            : 'Switch to the Online Catalog to stream or download songs, or scan your device from the Library tab.'}
+            ? `We couldn't find any songs matching "${query}". Check the title or artist name.`
+            : 'Tap any track to stream instantly, or use the download button for offline listening.'}
         </Text>
-        {!query.trim() && (
-          <TouchableOpacity
-            style={styles.emptyButton}
-            onPress={() => setCatalogMode('online')}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.emptyButtonText}>Explore Online Catalog</Text>
-          </TouchableOpacity>
-        )}
       </View>
     );
   };
@@ -555,151 +521,66 @@ export default function SearchScreen() {
         <Image source={logoSource} style={styles.watermarkImage} resizeMode="contain" />
       </View>
 
-      {/* Fixed Header: Title, Search Bar, Filter Pills, and Status */}
+      {/* Minimalist Top Header: 20px edge breathing room + full-width rounded search bar */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Search</Text>
 
-        {/* Dual-Mode Search Bar with Submit Button */}
-        <View style={styles.searchRow}>
-          <View style={styles.searchBar}>
-            <Ionicons
-              name="search"
-              size={19}
-              color={theme.textSecondary}
-              style={styles.searchIcon}
-            />
-            <TextInput
-              style={styles.searchInput}
-              placeholder={
-                catalogMode === 'online'
-                  ? 'Search songs, artists on YouTube/Audius...'
-                  : 'Search offline tracks, artists...'
+        <View
+          ref={(ref) => registerGuideTarget('search_input_bar', ref)}
+          collapsable={false}
+          style={styles.searchBar}
+        >
+          <Ionicons
+            name="search"
+            size={19}
+            color={theme.textSecondary}
+            style={styles.searchIcon}
+          />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search songs, artists on YouTube..."
+            placeholderTextColor={theme.textMuted}
+            value={query}
+            onChangeText={(text) => {
+              setQuery(text);
+              if (!text.trim()) {
+                setIsSearching(false);
               }
-              placeholderTextColor={theme.textMuted}
-              value={query}
-              onChangeText={setQuery}
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              returnKeyType="search"
-              onSubmitEditing={handleExplicitSearch}
-            />
-            {query.length > 0 && (
-              <TouchableOpacity
-                onPress={clearSearch}
-                style={styles.clearButton}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="close-circle" size={18} color={theme.textSecondary} />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <TouchableOpacity
-            style={[
-              styles.searchSubmitButton,
-              (!query.trim() || isSearching) && styles.searchSubmitButtonDisabled,
-            ]}
-            onPress={handleExplicitSearch}
-            disabled={!query.trim() || isSearching}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.searchSubmitText}>Search</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Filter Pill Row: Online Catalog | My Offline Library */}
-        <View style={styles.filterPillRow}>
-          <TouchableOpacity
-            style={[styles.filterPill, catalogMode === 'online' && styles.filterPillActive]}
-            onPress={() => setCatalogMode('online')}
-            activeOpacity={0.7}
-          >
-            <Ionicons
-              name="globe-outline"
-              size={14}
-              color={catalogMode === 'online' ? theme.onPrimary : theme.textSecondary}
-              style={styles.filterPillIcon}
-            />
-            <Text
-              style={[
-                styles.filterPillText,
-                catalogMode === 'online' && styles.filterPillTextActive,
-              ]}
+            }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+            returnKeyType="search"
+            onSubmitEditing={handleExplicitSearch}
+          />
+          {isSearching && (
+            <ActivityIndicator size="small" color={theme.primary} style={{ marginRight: 6 }} />
+          )}
+          {query.length > 0 && (
+            <TouchableOpacity
+              onPress={clearSearch}
+              style={styles.clearButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessibilityLabel="Clear search"
             >
-              Online Catalog
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.filterPill, catalogMode === 'offline' && styles.filterPillActive]}
-            onPress={() => setCatalogMode('offline')}
-            activeOpacity={0.7}
-          >
-            <Ionicons
-              name="folder-outline"
-              size={14}
-              color={catalogMode === 'offline' ? theme.onPrimary : theme.textSecondary}
-              style={styles.filterPillIcon}
-            />
-            <Text
-              style={[
-                styles.filterPillText,
-                catalogMode === 'offline' && styles.filterPillTextActive,
-              ]}
-            >
-              My Offline Library
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Meta Count / Status Row */}
-        <View style={styles.metaRow}>
-          <Text style={styles.metaText}>
-            {catalogMode === 'online'
-              ? query.trim()
-                ? `${displayedOnlineTracks.length} online track${displayedOnlineTracks.length === 1 ? '' : 's'} found`
-                : 'Discover, Stream & Download Online'
-              : query.trim()
-              ? `${displayedOfflineTracks.length} offline track${displayedOfflineTracks.length === 1 ? '' : 's'} found`
-              : `All Offline Tracks (${displayedOfflineTracks.length})`}
-          </Text>
-          {isSearching && <ActivityIndicator size="small" color={theme.primary} />}
+              <Ionicons name="close-circle" size={18} color={theme.textSecondary} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
-      {/* FlatList of Results */}
-      {catalogMode === 'online' ? (
-        <FlatList
-          style={styles.list}
-          data={displayedOnlineTracks}
-          keyExtractor={(item) => `${item.source}_${item.id}`}
-          renderItem={renderOnlineTrackItem}
-          ListEmptyComponent={renderEmptyState}
-          contentContainerStyle={styles.listContent}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          showsVerticalScrollIndicator={false}
-        />
-      ) : (
-        <FlatList
-          style={styles.list}
-          data={displayedOfflineTracks}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <TrackItem
-              track={item}
-              queue={displayedOfflineTracks}
-              onDelete={handleDeleteTrack}
-            />
-          )}
-          ListEmptyComponent={renderEmptyState}
-          contentContainerStyle={styles.listContent}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          showsVerticalScrollIndicator={false}
-        />
-      )}
+      {/* FlatList of Online Results */}
+      <FlatList
+        style={styles.list}
+        data={displayedOnlineTracks}
+        keyExtractor={(item) => `${item.source}_${item.id}`}
+        renderItem={renderOnlineTrackItem}
+        ListEmptyComponent={renderEmptyState}
+        contentContainerStyle={styles.listContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        showsVerticalScrollIndicator={false}
+      />
 
       {/* Soft Monochrome Confirmation & Error Dialog */}
       <ConfirmModal

@@ -33,6 +33,7 @@ export default function NowPlayingModal() {
   const isModalOpen = usePlayerStore((state) => state.isModalOpen);
   const setModalOpen = usePlayerStore((state) => state.setModalOpen);
   const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const playbackContext = usePlayerStore((state) => state.playbackContext);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const position = usePlayerStore((state) => state.position);
   const duration = usePlayerStore((state) => state.duration);
@@ -68,6 +69,9 @@ export default function NowPlayingModal() {
   // Local drag state for smooth slider dragging
   const [isSeeking, setIsSeeking] = useState(false);
   const [dragPosition, setDragPosition] = useState(0);
+
+  // Track options modal state (•••)
+  const [showTrackMenuModal, setShowTrackMenuModal] = useState(false);
 
   // Edit track metadata modal state
   const [showEditModal, setShowEditModal] = useState(false);
@@ -184,6 +188,12 @@ export default function NowPlayingModal() {
   const effectivePosition = isSeeking ? dragPosition : position;
   const maxSliderValue = duration > 0 ? duration : 1;
 
+  const isPlaylist = playbackContext?.type === 'playlist' && Boolean(playbackContext.name);
+  const headerSuperText = isPlaylist ? 'PLAYING FROM PLAYLIST' : 'PLAYING FROM YOUR LIBRARY';
+  const headerSubText = isPlaylist
+    ? playbackContext.name!
+    : (playbackContext?.name || 'Local Offline Tracks');
+
   return (
     <Modal
       visible={isModalOpen}
@@ -203,27 +213,35 @@ export default function NowPlayingModal() {
           />
         </View>
 
-        {/* Top Navigation Bar */}
+        {/* Context-Aware Top Navigation Bar */}
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.headerIconButton}
             onPress={() => setModalOpen(false)}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Close player"
           >
             <Ionicons name="chevron-down" size={26} color={theme.textPrimary} />
           </TouchableOpacity>
 
           <View style={styles.headerTitleContainer}>
-            <Text style={styles.headerSuperText}>PLAYING FROM YOUR LIBRARY</Text>
+            <Text style={styles.headerSuperText}>{headerSuperText}</Text>
             <Text style={styles.headerSubText} numberOfLines={1}>
-              Local Offline Tracks
+              {headerSubText}
             </Text>
           </View>
 
-          <View style={styles.headerIconButton} />
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={() => setShowTrackMenuModal(true)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Track options"
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={theme.textPrimary} />
+          </TouchableOpacity>
         </View>
 
-        {/* Minimalist Monochrome Artwork / Dot-Matrix Visualizer Section with Tap-to-Change Cover Image */}
+        {/* Minimalist Monochrome Artwork / Dot-Matrix Visualizer Section */}
         <View style={styles.artworkWrapper}>
           <TouchableOpacity
             style={styles.artworkContainer}
@@ -239,49 +257,18 @@ export default function NowPlayingModal() {
             ) : (
               <DotMatrixVisualizer isPlaying={isPlaying} position={effectivePosition} />
             )}
-
-            {/* Subtle camera / edit badge in bottom-right corner */}
-            <View style={styles.artworkEditBadge}>
-              <Ionicons name="camera" size={15} color={theme.onPrimary} />
-            </View>
           </TouchableOpacity>
         </View>
 
-        {/* Track Title and Artist (Tap to edit details) */}
+        {/* Track Title and Artist (Clean, Zero Visual Clutter) */}
         <View style={styles.infoContainer}>
-          <TouchableOpacity
-            style={styles.textContainer}
-            onPress={handleOpenEditModal}
-            activeOpacity={0.7}
-            accessibilityLabel="Edit song title and artist"
-          >
-            <View style={styles.editTitleRow}>
-              <Text style={styles.title} numberOfLines={1}>
-                {currentTrack.title}
-              </Text>
-              <Ionicons
-                name="pencil"
-                size={14}
-                color={theme.textSecondary}
-                style={styles.editTitleIcon}
-              />
-            </View>
+          <View style={styles.textContainer}>
+            <Text style={styles.title} numberOfLines={1}>
+              {currentTrack.title}
+            </Text>
             <Text style={styles.artist} numberOfLines={1}>
               {currentTrack.artist}
             </Text>
-          </TouchableOpacity>
-
-          <View style={styles.badgeContainer}>
-            <View style={styles.sourceBadge}>
-              <Ionicons
-                name={currentTrack.is_streaming ? 'globe-outline' : 'folder-outline'}
-                size={13}
-                color={theme.textSecondary}
-              />
-              <Text style={styles.sourceBadgeText}>
-                {currentTrack.is_streaming ? 'Stream' : 'Local'}
-              </Text>
-            </View>
           </View>
         </View>
 
@@ -380,6 +367,65 @@ export default function NowPlayingModal() {
             )}
           </TouchableOpacity>
         </View>
+
+        {/* Track Menu Options Modal (•••) */}
+        <Modal
+          visible={showTrackMenuModal}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowTrackMenuModal(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowTrackMenuModal(false)}
+          >
+            <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+              <Text style={styles.modalTitle} numberOfLines={1}>
+                {currentTrack.title}
+              </Text>
+              <Text style={styles.modalSubtitle} numberOfLines={1}>
+                {currentTrack.artist}
+              </Text>
+
+              <TouchableOpacity
+                style={styles.trackMenuOption}
+                onPress={() => {
+                  setShowTrackMenuModal(false);
+                  handleOpenEditModal();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="pencil-outline" size={19} color={theme.textPrimary} />
+                <Text style={styles.trackMenuOptionText}>Edit Track Info</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.trackMenuOption}
+                onPress={() => {
+                  setShowTrackMenuModal(false);
+                  handleArtworkPress();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="image-outline" size={19} color={theme.textPrimary} />
+                <Text style={styles.trackMenuOptionText}>
+                  {currentTrack.local_artwork_uri ? 'Change Cover Artwork' : 'Add Cover Artwork'}
+                </Text>
+              </TouchableOpacity>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => setShowTrackMenuModal(false)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
 
         {/* Edit Track Title & Artist Modal */}
         <Modal

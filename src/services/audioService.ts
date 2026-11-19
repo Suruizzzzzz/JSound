@@ -22,7 +22,11 @@ let shouldAutoPlay = true;
 // Only skip when explicitly running inside Expo Go client where background service bindings trigger LogBox errors.
 const isExpoGo =
   Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
-  Constants.appOwnership === 'expo';
+  (Constants.executionEnvironment as string) === 'storeClient' ||
+  Constants.appOwnership === 'expo' ||
+  (typeof (Constants as any).expoVersion === 'string' && Constants.appOwnership !== 'standalone') ||
+  Boolean((Constants as any).manifest2?.extra?.expoGo) ||
+  Boolean((Constants as any).manifest?.developer);
 
 const DEFAULT_LOCK_SCREEN_OPTIONS: AudioLockScreenOptions = {
   showNextTrack: true,
@@ -47,8 +51,8 @@ export async function ensureAudioMode(): Promise<void> {
     if (!isExpoGo) {
       try {
         await requestNotificationPermissionsAsync();
-      } catch (permErr) {
-        console.warn('[AudioService] Notification permission request error:', permErr);
+      } catch {
+        // Silently skip if permission prompt is unsupported or unavailable
       }
     }
   } catch (error) {
@@ -123,8 +127,8 @@ export async function loadAndPlayAudio(
                 res.catch(() => {});
               }
             }
-          } catch (lockErr) {
-            console.warn('[AudioService] Failed to update lock screen on replace:', lockErr);
+          } catch {
+            // Silently ignore if native lock screen controls service is not bound
           }
         }
 
@@ -161,8 +165,8 @@ export async function loadAndPlayAudio(
         if (res && typeof res.catch === 'function') {
           res.catch(() => {});
         }
-      } catch (lockErr) {
-        console.warn('[AudioService] Failed to activate lock screen controls:', lockErr);
+      } catch {
+        // Silently ignore if native lock screen controls service is not bound
       }
     }
 

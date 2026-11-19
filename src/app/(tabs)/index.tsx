@@ -11,7 +11,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  BackHandler,
 } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -25,6 +27,7 @@ import {
   createPlaylist,
   getAllPlaylists,
   deletePlaylist as removePlaylistFromDb,
+  updatePlaylistName,
   updatePlaylistCover,
   addTrackToPlaylist,
   removeTrackFromPlaylist,
@@ -33,9 +36,16 @@ import {
   getSetting,
   setSetting,
 } from '@/lib/database';
+import {
+  sharePlaylist,
+  fetchSharedPlaylist,
+  importSharedPlaylist,
+  SharedPlaylistData,
+} from '@/services/playlistSyncService';
 import TrackItem from '@/components/TrackItem';
 import ConfirmModal from '@/components/ConfirmModal';
 import { Track, Playlist } from '@/types/music';
+import { registerGuideTarget, useGuideStore } from '@/store/guideStore';
 import { createStyles } from '@/styles/index.styles';
 
 type LibraryTab = 'songs' | 'playlists';
@@ -84,6 +94,7 @@ export default function LibraryScreen() {
   // Scanner & library states
   const [isScanning, setIsScanning] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [showAddMusicModal, setShowAddMusicModal] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [isReordering, setIsReordering] = useState(false);
   const [sortChoice, setSortChoice] = useState<SortChoice>('last_download');
@@ -100,8 +111,26 @@ export default function LibraryScreen() {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [newPlaylistCoverUri, setNewPlaylistCoverUri] = useState<string | null>(null);
 
+  // Edit Playlist Name Modal State
+  const [showEditNameModal, setShowEditNameModal] = useState(false);
+  const [editPlaylistNameInput, setEditPlaylistNameInput] = useState('');
+
+  // Share Playlist State
+  const [isSharingPlaylist, setIsSharingPlaylist] = useState(false);
+
+  // Import Shared Playlist Modal State
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importCodeInput, setImportCodeInput] = useState('');
+  const [isSearchingShared, setIsSearchingShared] = useState(false);
+  const [sharedPreview, setSharedPreview] = useState<SharedPlaylistData | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [isImportingShared, setIsImportingShared] = useState(false);
+
   // Selected Playlist Cover Action Modal State
   const [showPlaylistCoverActionModal, setShowPlaylistCoverActionModal] = useState(false);
+
+  // Playlist Options Menu Action Sheet Modal State
+  const [showPlaylistMenuModal, setShowPlaylistMenuModal] = useState(false);
 
   // Add to Playlist Modal State
   const [trackToAddToPlaylist, setTrackToAddToPlaylist] = useState<Track | null>(null);
@@ -193,6 +222,49 @@ export default function LibraryScreen() {
     };
   }, [setTracks, loadPlaylists, applySort]);
 
+  // Refresh library and maintain Last Download sort order when returning to Library tab
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      (async () => {
+        try {
+          const stored = await getAllTracks();
+          const savedSort = ((await getSetting('library_sort')) as SortChoice) || 'last_download';
+          if (isMounted) {
+            setSortChoice(savedSort);
+            const sorted = savedSort !== 'custom' ? applySort(stored, savedSort) : stored;
+            setTracks(sorted);
+          }
+        } catch (e) {
+          console.warn('Failed to refresh tracks on tab focus:', e);
+        }
+      })();
+      return () => {
+        isMounted = false;
+      };
+    }, [applySort, setTracks])
+  );
+
+  // Hook up Add Music modal triggers for the interactive walkthrough guide
+  useEffect(() => {
+    useGuideStore.getState().setRequestOpenAddMusicModal(() => setShowAddMusicModal(true));
+    useGuideStore.getState().setRequestCloseAddMusicModal(() => setShowAddMusicModal(false));
+    return () => {
+      useGuideStore.getState().setRequestOpenAddMusicModal(undefined);
+      useGuideStore.getState().setRequestCloseAddMusicModal(undefined);
+    };
+  }, []);
+
+  // Dismiss Add Music modal on Android hardware back button
+  useEffect(() => {
+    if (!showAddMusicModal) return;
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setShowAddMusicModal(false);
+      return true;
+    });
+    return () => backSub.remove();
+  }, [showAddMusicModal]);
+
   const handleScanMusic = async () => {
     if (isScanning || isImporting) return;
     setIsScanning(true);
@@ -204,7 +276,26 @@ export default function LibraryScreen() {
       setScanMessage(
         `Scan complete! ${scanned.length} track${scanned.length === 1 ? '' : 's'} imported.`
       );
+
+      // Walkthrough Tour Branching:
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 1) {
+        if (scanned.length > 0) {
+          // Branch A: tracks found -> Step 3 (Play Instantly)
+          guideState.setNoTracksFound(false);
+          guideState.setStep(2);
+        } else {
+          // Branch B: 0 tracks found -> Skip Step 3 and advance directly to Step 4 (Search Tab)
+          guideState.setNoTracksFound(true);
+          guideState.setStep(3);
+        }
+      }
     } catch (error: any) {
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 1) {
+        guideState.setNoTracksFound(true);
+        guideState.setStep(3);
+      }
       if (error?.message === 'PERMISSION_RESTRICTED') {
         setConfirmConfig({
           visible: true,
@@ -333,7 +424,7 @@ export default function LibraryScreen() {
       const pTracks = await getPlaylistTracks(playlist.id);
       if (pTracks.length > 0) {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        await playTrack(pTracks[0], pTracks);
+        await playTrack(pTracks[0], pTracks, { type: 'playlist', name: playlist.name });
       } else {
         handleOpenPlaylist(playlist);
       }
@@ -343,9 +434,12 @@ export default function LibraryScreen() {
   };
 
   const handlePlayAllInSelectedPlaylist = async () => {
-    if (selectedPlaylistTracks.length > 0) {
+    if (selectedPlaylistTracks.length > 0 && selectedPlaylist) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await playTrack(selectedPlaylistTracks[0], selectedPlaylistTracks);
+      await playTrack(selectedPlaylistTracks[0], selectedPlaylistTracks, {
+        type: 'playlist',
+        name: selectedPlaylist.name,
+      });
     }
   };
 
@@ -431,6 +525,128 @@ export default function LibraryScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       console.warn('Failed to create playlist:', e);
+    }
+  };
+
+  const handleOpenEditPlaylistName = () => {
+    if (!selectedPlaylist) return;
+    setEditPlaylistNameInput(selectedPlaylist.name);
+    setShowEditNameModal(true);
+  };
+
+  const handleSaveEditPlaylistName = async () => {
+    if (!selectedPlaylist) return;
+    const cleanName = editPlaylistNameInput.trim();
+    if (!cleanName) return;
+
+    try {
+      await updatePlaylistName(selectedPlaylist.id, cleanName);
+      setSelectedPlaylist((prev) => (prev ? { ...prev, name: cleanName } : null));
+      await loadPlaylists();
+      setShowEditNameModal(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      console.warn('Failed to update playlist name:', e);
+    }
+  };
+
+  const handleSharePlaylist = async () => {
+    if (!selectedPlaylist) return;
+    setIsSharingPlaylist(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    try {
+      const result = await sharePlaylist(selectedPlaylist.id);
+      setIsSharingPlaylist(false);
+
+      if (result.success && result.shareCode) {
+        setSelectedPlaylist((prev) => (prev ? { ...prev, share_code: result.shareCode } : null));
+        await loadPlaylists();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+        setConfirmConfig({
+          visible: true,
+          title: 'Playlist Link Copied!',
+          message: `Share Code: ${result.shareCode}\n\nThe link "${result.shareUrl}" has been copied to your clipboard. Friends can use this code or link to import your playlist into JStream.`,
+          icon: 'checkmark-circle-outline',
+          confirmText: 'Awesome',
+          cancelText: '',
+          isDestructive: false,
+          onConfirm: () => setConfirmConfig((prev) => ({ ...prev, visible: false })),
+        });
+      } else {
+        setConfirmConfig({
+          visible: true,
+          title: 'Share Playlist',
+          message: result.error || 'Failed to share playlist.',
+          icon: 'alert-circle-outline',
+          confirmText: 'Got It',
+          cancelText: '',
+          isDestructive: false,
+          onConfirm: () => setConfirmConfig((prev) => ({ ...prev, visible: false })),
+        });
+      }
+    } catch (err: any) {
+      setIsSharingPlaylist(false);
+      setConfirmConfig({
+        visible: true,
+        title: 'Share Playlist',
+        message: err.message || 'An error occurred while sharing the playlist.',
+        icon: 'alert-circle-outline',
+        confirmText: 'OK',
+        cancelText: '',
+        isDestructive: false,
+        onConfirm: () => setConfirmConfig((prev) => ({ ...prev, visible: false })),
+      });
+    }
+  };
+
+  const handleOpenImportModal = () => {
+    setImportCodeInput('');
+    setSharedPreview(null);
+    setImportError(null);
+    setShowImportModal(true);
+  };
+
+  const handleSearchSharedPlaylist = async () => {
+    const trimmed = importCodeInput.trim();
+    if (!trimmed) {
+      setImportError('Please enter a share code or playlist link.');
+      return;
+    }
+    setImportError(null);
+    setIsSearchingShared(true);
+
+    try {
+      const data = await fetchSharedPlaylist(trimmed);
+      setSharedPreview(data);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      setImportError(e.message || 'Could not find playlist with this code.');
+      setSharedPreview(null);
+    } finally {
+      setIsSearchingShared(false);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!sharedPreview) return;
+    setIsImportingShared(true);
+
+    try {
+      const imported = await importSharedPlaylist(sharedPreview);
+      await loadPlaylists();
+      setShowImportModal(false);
+      setSharedPreview(null);
+      setImportCodeInput('');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Open the newly imported playlist
+      handleOpenPlaylist(imported);
+    } catch (e: any) {
+      setImportError(e.message || 'Failed to import playlist.');
+    } finally {
+      setIsImportingShared(false);
     }
   };
 
@@ -539,13 +755,6 @@ export default function LibraryScreen() {
             <Text style={styles.appTagline}>PERSONAL MUSIC</Text>
           </View>
         </View>
-
-        <View style={styles.topActions}>
-          <View style={styles.offlineBadge}>
-            <Ionicons name="cloud-offline-outline" size={12} color={theme.textSecondary} />
-            <Text style={styles.offlineBadgeText}>Offline</Text>
-          </View>
-        </View>
       </View>
 
       {/* Segmented Tab Selector ("All Songs" | "Playlists") */}
@@ -632,7 +841,7 @@ export default function LibraryScreen() {
 
   const renderSongsHeader = () => (
     <View style={{ marginTop: 2 }}>
-      {/* Library Stats & Section Heading */}
+      {/* Row 1: Section Heading on left, + Add Music flush right */}
       <View style={styles.libraryMetaRow}>
         <View>
           <Text style={styles.libraryTitle}>Your Library</Text>
@@ -641,82 +850,74 @@ export default function LibraryScreen() {
           </Text>
         </View>
 
-        <View style={styles.headerRightButtonsRow}>
-          {/* Sort Button */}
-          <TouchableOpacity
-            style={styles.sortButton}
-            onPress={() => setShowSortModal(true)}
-            activeOpacity={0.7}
-            accessibilityLabel="Sort songs"
-          >
-            <Ionicons name="filter-outline" size={13} color={theme.textSecondary} />
-            <Text style={styles.sortButtonText} numberOfLines={1}>
-              {getSortLabel(sortChoice)}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Reorder Toggle Button */}
-          {tracks.length > 1 && (
-            <TouchableOpacity
-              style={[styles.reorderToggleButton, isReordering && styles.reorderToggleActive]}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setIsReordering((prev) => !prev);
-              }}
-              activeOpacity={0.7}
-              accessibilityLabel={isReordering ? 'Finish reordering' : 'Reorder library tracks'}
-            >
-              <Ionicons
-                name={isReordering ? 'checkmark' : 'swap-vertical'}
-                size={14}
-                color={isReordering ? theme.onPrimary : theme.textSecondary}
-              />
-              <Text
-                style={[
-                  styles.reorderToggleText,
-                  isReordering && styles.reorderToggleTextActive,
-                ]}
-              >
-                {isReordering ? 'Done' : 'Reorder'}
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {/* Action Buttons: Scan Device Storage + Import Audio Files */}
-      <View style={styles.actionButtonsRow}>
+        {/* + Add Music Trigger Button */}
         <TouchableOpacity
-          style={[styles.scanButton, isScanning && styles.scanButtonDisabled]}
-          onPress={handleScanMusic}
+          ref={(ref) => registerGuideTarget('add_music_button', ref)}
+          style={styles.addMusicButton}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowAddMusicModal(true);
+            const guideState = useGuideStore.getState();
+            if (guideState.isOpen && guideState.currentStep === 0) {
+              guideState.nextStep();
+            }
+          }}
           disabled={isScanning || isImporting}
           activeOpacity={0.8}
+          accessibilityLabel="Add music to library"
         >
-          {isScanning ? (
+          {isScanning || isImporting ? (
             <ActivityIndicator size="small" color={theme.onPrimary} />
           ) : (
-            <Ionicons name="refresh" size={16} color={theme.onPrimary} />
+            <Ionicons name="add" size={16} color={theme.onPrimary} />
           )}
-          <Text style={styles.scanButtonText}>
-            {isScanning ? 'Scanning...' : 'Scan Music'}
+          <Text style={styles.addMusicButtonText}>
+            {isScanning ? 'Scanning...' : isImporting ? 'Importing...' : 'Add Music'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Row 2: Sort and Reorder Cleanly Underneath */}
+      <View style={styles.filterControlsRow}>
+        {/* Sort Button */}
+        <TouchableOpacity
+          style={styles.sortButton}
+          onPress={() => setShowSortModal(true)}
+          activeOpacity={0.7}
+          accessibilityLabel="Sort songs"
+        >
+          <Ionicons name="filter-outline" size={13} color={theme.textSecondary} />
+          <Text style={styles.sortButtonText} numberOfLines={1}>
+            {getSortLabel(sortChoice)}
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.importButton}
-          onPress={handleImportAudio}
-          disabled={isImporting || isScanning}
-          activeOpacity={0.8}
-        >
-          {isImporting ? (
-            <ActivityIndicator size="small" color={theme.textPrimary} />
-          ) : (
-            <Ionicons name="folder-open-outline" size={16} color={theme.textPrimary} />
-          )}
-          <Text style={styles.importButtonText}>
-            {isImporting ? 'Importing...' : 'Import Files'}
-          </Text>
-        </TouchableOpacity>
+        {/* Reorder Toggle Button */}
+        {tracks.length > 1 && (
+          <TouchableOpacity
+            style={[styles.reorderToggleButton, isReordering && styles.reorderToggleActive]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setIsReordering((prev) => !prev);
+            }}
+            activeOpacity={0.7}
+            accessibilityLabel={isReordering ? 'Finish reordering' : 'Reorder library tracks'}
+          >
+            <Ionicons
+              name={isReordering ? 'checkmark' : 'swap-vertical'}
+              size={14}
+              color={isReordering ? theme.onPrimary : theme.textSecondary}
+            />
+            <Text
+              style={[
+                styles.reorderToggleText,
+                isReordering && styles.reorderToggleTextActive,
+              ]}
+            >
+              {isReordering ? 'Done' : 'Reorder'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {scanMessage && (
@@ -741,18 +942,29 @@ export default function LibraryScreen() {
         </Text>
       </View>
 
-      <TouchableOpacity
-        style={styles.newPlaylistButton}
-        onPress={() => {
-          setNewPlaylistName('');
-          setNewPlaylistCoverUri(null);
-          setShowCreateModal(true);
-        }}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="add" size={16} color={theme.onPrimary} />
-        <Text style={styles.newPlaylistButtonText}>New Playlist</Text>
-      </TouchableOpacity>
+      <View style={styles.playlistHeaderActions}>
+        <TouchableOpacity
+          style={styles.importPlaylistButton}
+          onPress={handleOpenImportModal}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="cloud-download-outline" size={15} color={theme.textPrimary} />
+          <Text style={styles.importPlaylistButtonText}>Import</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.newPlaylistButton}
+          onPress={() => {
+            setNewPlaylistName('');
+            setNewPlaylistCoverUri(null);
+            setShowCreateModal(true);
+          }}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="add" size={16} color={theme.onPrimary} />
+          <Text style={styles.newPlaylistButtonText}>New Playlist</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -767,36 +979,40 @@ export default function LibraryScreen() {
             <TrackItem
               track={item}
               queue={selectedPlaylistTracks}
+              playbackContext={{ type: 'playlist', name: selectedPlaylist.name }}
               onDelete={handleRemoveTrackFromCurrentPlaylist}
               onAddToPlaylist={handleOpenAddToPlaylist}
             />
           )}
           ListHeaderComponent={
             <View style={styles.playlistDetailHeader}>
-              {/* Back button & Delete button */}
+              {/* Top Bar: Back button on left, ••• menu button on right */}
               <View style={styles.playlistDetailNavRow}>
                 <TouchableOpacity
                   style={styles.playlistDetailBackBtn}
                   onPress={() => setSelectedPlaylist(null)}
                   activeOpacity={0.7}
+                  accessibilityLabel="Back to all playlists"
                 >
-                  <Ionicons name="arrow-back" size={18} color={theme.textPrimary} />
-                  <Text style={styles.playlistDetailBackText}>All Playlists</Text>
+                  <Ionicons name="arrow-back" size={17} color={theme.textPrimary} />
+                  <Text style={styles.playlistDetailBackText}>Playlists</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.playlistDetailDeleteBtn}
-                  onPress={() => handleDeletePlaylistConfirm(selectedPlaylist)}
+                  style={styles.playlistDetailMenuBtn}
+                  onPress={() => setShowPlaylistMenuModal(true)}
                   activeOpacity={0.7}
+                  accessibilityLabel="Playlist menu options"
                 >
-                  <Ionicons name="trash-outline" size={18} color={theme.textMuted} />
+                  <Ionicons name="ellipsis-horizontal" size={20} color={theme.textPrimary} />
                 </TouchableOpacity>
               </View>
 
-              {/* Playlist Summary Card */}
-              <View style={styles.playlistDetailCard}>
+              {/* Centered Hero Header */}
+              <View style={styles.playlistHeroContainer}>
+                {/* 160x160 Rounded Cover Art */}
                 <TouchableOpacity
-                  style={styles.playlistDetailCover}
+                  style={styles.playlistHeroCover}
                   onPress={() => setShowPlaylistCoverActionModal(true)}
                   activeOpacity={0.8}
                   accessibilityLabel="Change or remove playlist cover"
@@ -804,36 +1020,73 @@ export default function LibraryScreen() {
                   {selectedPlaylist.cover_uri ? (
                     <Image
                       source={{ uri: selectedPlaylist.cover_uri }}
-                      style={styles.playlistCoverImage}
+                      style={styles.playlistHeroCoverImage}
                       resizeMode="cover"
                     />
                   ) : (
-                    <Ionicons name="albums-outline" size={36} color={theme.textSecondary} />
+                    <View style={styles.playlistHeroCoverPlaceholder}>
+                      <Ionicons name="musical-notes" size={60} color={theme.textSecondary} />
+                    </View>
                   )}
                 </TouchableOpacity>
 
-                <View style={styles.playlistDetailInfo}>
-                  <Text style={styles.playlistDetailTitle} numberOfLines={1}>
-                    {selectedPlaylist.name}
+                {/* Bold Playlist Title */}
+                <Text style={styles.playlistHeroTitle} numberOfLines={2}>
+                  {selectedPlaylist.name}
+                </Text>
+
+                {/* Subtitle & Status Badges */}
+                <View style={styles.playlistHeroSubtitleRow}>
+                  <Text style={styles.playlistHeroSubtitle}>
+                    {selectedPlaylistTracks.length} song{selectedPlaylistTracks.length === 1 ? '' : 's'}
                   </Text>
-                  <Text style={styles.playlistDetailSubtitle}>
-                    {selectedPlaylistTracks.length} song
-                    {selectedPlaylistTracks.length === 1 ? '' : 's'} • Offline
-                  </Text>
+                  <Text style={[styles.playlistHeroSubtitle, { opacity: 0.5 }]}>•</Text>
+                  <View style={styles.playlistStatusBadge}>
+                    <Ionicons
+                      name={selectedPlaylist.is_synced ? 'cloud-done-outline' : 'phone-portrait-outline'}
+                      size={12}
+                      color={theme.textSecondary}
+                    />
+                    <Text style={styles.playlistStatusBadgeText}>
+                      {selectedPlaylist.is_synced ? 'Synced' : 'Offline'}
+                    </Text>
+                  </View>
+                  {selectedPlaylist.share_code && (
+                    <View style={styles.playlistStatusBadge}>
+                      <Ionicons name="link-outline" size={12} color={theme.textSecondary} />
+                      <Text style={styles.playlistStatusBadgeText}>{selectedPlaylist.share_code}</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Side-by-side Button Row: Play All + Share */}
+                <View style={styles.playlistHeroButtonRow}>
+                  <TouchableOpacity
+                    style={styles.playlistHeroPlayAllBtn}
+                    onPress={handlePlayAllInSelectedPlaylist}
+                    activeOpacity={0.8}
+                    accessibilityLabel="Play all songs in playlist"
+                  >
+                    <Ionicons name="play" size={18} color={theme.onPrimary} />
+                    <Text style={styles.playlistHeroPlayAllText}>Play All</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.playlistHeroShareBtn}
+                    onPress={handleSharePlaylist}
+                    activeOpacity={0.7}
+                    disabled={isSharingPlaylist}
+                    accessibilityLabel="Share playlist"
+                  >
+                    {isSharingPlaylist ? (
+                      <ActivityIndicator size="small" color={theme.textPrimary} />
+                    ) : (
+                      <Ionicons name="share-social-outline" size={18} color={theme.textPrimary} />
+                    )}
+                    <Text style={styles.playlistHeroShareText}>Share</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
-
-              {/* Play All Button */}
-              {selectedPlaylistTracks.length > 0 && (
-                <TouchableOpacity
-                  style={styles.playlistDetailPlayAllBtn}
-                  onPress={handlePlayAllInSelectedPlaylist}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="play" size={18} color={theme.onPrimary} />
-                  <Text style={styles.playlistDetailPlayAllText}>Play All</Text>
-                </TouchableOpacity>
-              )}
             </View>
           }
           ListEmptyComponent={
@@ -954,10 +1207,17 @@ export default function LibraryScreen() {
           data={tracks}
           keyExtractor={(item) => item.id}
           renderItem={({ item, index }) => (
-            <View style={styles.trackRowContainer}>
+            <View
+              ref={(r) => {
+                if (index === 0) registerGuideTarget('first_track_item', r);
+              }}
+              collapsable={false}
+              style={styles.trackRowContainer}
+            >
               <TrackItem
                 track={item}
                 queue={tracks}
+                playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
                 onDelete={handleDeleteTrack}
                 showDragHandle={isReordering}
                 onMoveUp={() => handleMoveTrack(index, index - 1)}
@@ -966,6 +1226,15 @@ export default function LibraryScreen() {
                 isLast={index === tracks.length - 1}
                 onLongPress={handleRowLongPress}
                 onAddToPlaylist={handleOpenAddToPlaylist}
+                onPlay={() => {
+                  const guideState = useGuideStore.getState();
+                  if (guideState.isOpen && guideState.currentStep === 2) {
+                    usePlayerStore.getState().setModalOpen(true);
+                    guideState.setStep(3); // Step 3 -> Step 4 (Search Tab)
+                  } else if (guideState.isOpen && guideState.currentStep === 6) {
+                    guideState.closeGuide(); // Step 7 completed!
+                  }
+                }}
               />
             </View>
           )}
@@ -975,6 +1244,85 @@ export default function LibraryScreen() {
         />
       ) : (
         renderPlaylistsTab()
+      )}
+
+      {/* Add Music Modal (Inline Overlay with zIndex 500 so NewcomerGuideModal at zIndex 9999 renders cleanly above it) */}
+      {showAddMusicModal && (
+        <View style={styles.inlineModalWrapper}>
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowAddMusicModal(false)}
+          >
+            <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+              <View style={styles.addMusicIconBadge}>
+                <Ionicons name="musical-notes" size={24} color={theme.textPrimary} />
+              </View>
+
+              <Text style={styles.modalTitle}>Add Music</Text>
+              <Text style={styles.modalSubtitle}>
+                Import audio into your on-device offline music library
+              </Text>
+
+              {/* Option 1: Scan Device Storage */}
+              <View
+                ref={(r) => registerGuideTarget('scan_storage_button', r)}
+                collapsable={false}
+              >
+                <TouchableOpacity
+                  style={styles.addMusicOptionRow}
+                  onPress={() => {
+                    setShowAddMusicModal(false);
+                    handleScanMusic();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.addMusicOptionIconWrap}>
+                    <Ionicons name="refresh" size={18} color={theme.textPrimary} />
+                  </View>
+                  <View style={styles.addMusicOptionTextGroup}>
+                    <Text style={styles.addMusicOptionTitle}>Scan Device Storage</Text>
+                    <Text style={styles.addMusicOptionSubtitle}>
+                      Auto-detect audio files from your device folders
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Option 2: Import Audio Files */}
+              <TouchableOpacity
+                style={styles.addMusicOptionRow}
+                onPress={() => {
+                  setShowAddMusicModal(false);
+                  handleImportAudio();
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.addMusicOptionIconWrap}>
+                  <Ionicons name="folder-open-outline" size={18} color={theme.textPrimary} />
+                </View>
+                <View style={styles.addMusicOptionTextGroup}>
+                  <Text style={styles.addMusicOptionTitle}>Import Audio Files</Text>
+                  <Text style={styles.addMusicOptionSubtitle}>
+                    Browse &amp; pick audio files via system file picker
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
+              </TouchableOpacity>
+
+              <View style={[styles.modalButtons, { marginTop: 8 }]}>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => setShowAddMusicModal(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Sort Choice Modal */}
@@ -1212,6 +1560,189 @@ export default function LibraryScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Edit Playlist Name Modal */}
+      <Modal
+        visible={showEditNameModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowEditNameModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Rename Playlist</Text>
+            <Text style={styles.modalSubtitle}>
+              Enter a new title for this playlist
+            </Text>
+
+            <TextInput
+              style={styles.modalInput}
+              value={editPlaylistNameInput}
+              onChangeText={setEditPlaylistNameInput}
+              placeholder="Playlist name"
+              placeholderTextColor={theme.textMuted}
+              maxLength={40}
+              autoFocus
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowEditNameModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalSaveBtn}
+                onPress={handleSaveEditPlaylistName}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Import Shared Playlist Modal */}
+      <Modal
+        visible={showImportModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowImportModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Import Shared Playlist</Text>
+            <Text style={styles.modalSubtitle}>
+              Enter a share code (e.g. JST-XXXX) or paste a JStream link
+            </Text>
+
+            <View style={styles.importInputRow}>
+              <TextInput
+                style={styles.importInput}
+                value={importCodeInput}
+                onChangeText={(t) => {
+                  setImportCodeInput(t);
+                  if (importError) setImportError(null);
+                }}
+                placeholder="JST-XXXX or jstream://..."
+                placeholderTextColor={theme.textMuted}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                style={styles.importSearchBtn}
+                onPress={handleSearchSharedPlaylist}
+                disabled={isSearchingShared}
+                activeOpacity={0.8}
+              >
+                {isSearchingShared ? (
+                  <ActivityIndicator size="small" color={theme.onPrimary} />
+                ) : (
+                  <Text style={styles.importSearchBtnText}>Find</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {importError && (
+              <View
+                style={[
+                  styles.messageBox,
+                  {
+                    backgroundColor: 'rgba(255, 69, 58, 0.1)',
+                    borderColor: 'rgba(255, 69, 58, 0.3)',
+                    marginBottom: 14,
+                  },
+                ]}
+              >
+                <Ionicons name="alert-circle-outline" size={16} color="#FF453A" />
+                <Text style={[styles.messageText, { color: '#FF453A' }]}>{importError}</Text>
+              </View>
+            )}
+
+            {sharedPreview && (
+              <View style={styles.sharedPreviewCard}>
+                <View style={styles.sharedPreviewHeader}>
+                  <View style={styles.sharedPreviewCover}>
+                    {sharedPreview.cover_url ? (
+                      <Image
+                        source={{ uri: sharedPreview.cover_url }}
+                        style={styles.sharedPreviewCoverImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="albums-outline" size={24} color={theme.textSecondary} />
+                    )}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sharedPreviewTitle} numberOfLines={1}>
+                      {sharedPreview.name}
+                    </Text>
+                    <Text style={styles.sharedPreviewSubtitle}>
+                      {sharedPreview.tracks.length} song{sharedPreview.tracks.length === 1 ? '' : 's'} • Shared via {sharedPreview.share_code}
+                    </Text>
+                  </View>
+                </View>
+
+                {sharedPreview.tracks.length > 0 && (
+                  <ScrollView style={styles.sharedTrackList} nestedScrollEnabled>
+                    {sharedPreview.tracks.slice(0, 10).map((t, i) => (
+                      <View key={t.id || i} style={styles.sharedTrackItem}>
+                        <Ionicons name="musical-note" size={12} color={theme.textSecondary} />
+                        <Text style={styles.sharedTrackTitle} numberOfLines={1}>
+                          {t.title}
+                        </Text>
+                        <Text style={styles.sharedTrackArtist} numberOfLines={1}>
+                          {t.artist}
+                        </Text>
+                      </View>
+                    ))}
+                    {sharedPreview.tracks.length > 10 && (
+                      <Text style={[styles.sharedPreviewSubtitle, { textAlign: 'center', marginTop: 4 }]}>
+                        + {sharedPreview.tracks.length - 10} more songs
+                      </Text>
+                    )}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowImportModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Close</Text>
+              </TouchableOpacity>
+
+              {sharedPreview && (
+                <TouchableOpacity
+                  style={styles.modalSaveBtn}
+                  onPress={handleConfirmImport}
+                  disabled={isImportingShared}
+                  activeOpacity={0.8}
+                >
+                  {isImportingShared ? (
+                    <ActivityIndicator size="small" color={theme.onPrimary} />
+                  ) : (
+                    <Text style={styles.modalSaveText}>Import to Library</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Add to Playlist Modal */}
       <Modal
         visible={trackToAddToPlaylist !== null}
@@ -1385,6 +1916,90 @@ export default function LibraryScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Playlist Options Action Sheet Modal (••• Menu) */}
+      <Modal
+        visible={showPlaylistMenuModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowPlaylistMenuModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.menuSheetOverlay}
+          activeOpacity={1}
+          onPress={() => setShowPlaylistMenuModal(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.menuSheetContent}>
+            <View style={styles.menuSheetHandle} />
+            <Text style={styles.menuSheetTitle} numberOfLines={1}>
+              {selectedPlaylist?.name || 'Playlist Options'}
+            </Text>
+
+            {/* Edit Playlist Title */}
+            <TouchableOpacity
+              style={styles.menuSheetOption}
+              onPress={() => {
+                setShowPlaylistMenuModal(false);
+                handleOpenEditPlaylistName();
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="pencil-outline" size={20} color={theme.textPrimary} />
+              <Text style={styles.menuSheetOptionText}>Edit Playlist Name</Text>
+            </TouchableOpacity>
+
+            {/* Change Cover Artwork */}
+            <TouchableOpacity
+              style={styles.menuSheetOption}
+              onPress={() => {
+                setShowPlaylistMenuModal(false);
+                setShowPlaylistCoverActionModal(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="image-outline" size={20} color={theme.textPrimary} />
+              <Text style={styles.menuSheetOptionText}>Change Cover Artwork</Text>
+            </TouchableOpacity>
+
+            {/* Share Playlist */}
+            <TouchableOpacity
+              style={styles.menuSheetOption}
+              onPress={() => {
+                setShowPlaylistMenuModal(false);
+                handleSharePlaylist();
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="share-social-outline" size={20} color={theme.textPrimary} />
+              <Text style={styles.menuSheetOptionText}>Share Playlist Link</Text>
+            </TouchableOpacity>
+
+            {/* Delete Playlist */}
+            <TouchableOpacity
+              style={styles.menuSheetOption}
+              onPress={() => {
+                setShowPlaylistMenuModal(false);
+                if (selectedPlaylist) {
+                  handleDeletePlaylistConfirm(selectedPlaylist);
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="trash-outline" size={20} color="#FF453A" />
+              <Text style={styles.menuSheetOptionTextDestructive}>Delete Playlist</Text>
+            </TouchableOpacity>
+
+            {/* Cancel */}
+            <TouchableOpacity
+              style={styles.menuSheetCancelBtn}
+              onPress={() => setShowPlaylistMenuModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.menuSheetCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );

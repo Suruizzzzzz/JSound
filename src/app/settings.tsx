@@ -5,6 +5,7 @@ import { useAuthStore } from "@/services/authService";
 import { pickAndImportAudioFiles } from "@/services/localScannerService";
 import { usePlayerStore } from "@/store/playerStore";
 import { useThemeStore } from "@/store/themeStore";
+import { useGuideStore } from "@/store/guideStore";
 import { createStyles } from "@/styles/settings.styles";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -313,6 +314,44 @@ export default function SettingsScreen() {
                 </Text>
                 <Text style={styles.rowSubtitle}>
                   Reset SQLite database index
+                </Text>
+              </View>
+            </View>
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.textSecondary}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* HELP & TOUR */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Help &amp; Tour</Text>
+        </View>
+
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => {
+              useGuideStore.getState().openGuide();
+              router.navigate('/(tabs)');
+            }}
+            activeOpacity={0.7}
+            accessibilityLabel="Replay App Walkthrough"
+          >
+            <View style={styles.rowLeft}>
+              <View style={styles.iconWrap}>
+                <Ionicons
+                  name="help-circle-outline"
+                  size={18}
+                  color={theme.textPrimary}
+                />
+              </View>
+              <View style={styles.rowTextGroup}>
+                <Text style={styles.rowTitle}>App Walkthrough</Text>
+                <Text style={styles.rowSubtitle}>
+                  Replay the interactive JStream feature tour
                 </Text>
               </View>
             </View>

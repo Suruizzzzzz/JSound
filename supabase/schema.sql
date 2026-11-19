@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- JStream Supabase SQL Schema
--- Lightweight Metadata Architecture with Row-Level Security (RLS)
+-- Lightweight Metadata Architecture with Row-Level Security (RLS) & Sharing
 -- ==============================================================================
 
 -- 1. Profiles Table
@@ -52,25 +52,32 @@ create table if not exists public.user_tracks (
   primary key (user_id, id)
 );
 
--- 3. User Playlists Table
+-- 3. User Playlists Table (Text IDs compatible with SQLite pl_... identifiers)
 create table if not exists public.user_playlists (
-  id uuid primary key default gen_random_uuid(),
+  id text primary key,
   user_id uuid references auth.users on delete cascade not null,
   name text not null,
   description text,
+  cover_url text,
+  share_code text unique,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 
+create index if not exists idx_user_playlists_user on public.user_playlists(user_id);
+create index if not exists idx_user_playlists_share_code on public.user_playlists(share_code);
+
 -- 4. User Playlist Tracks Table
 create table if not exists public.user_playlist_tracks (
-  playlist_id uuid references public.user_playlists(id) on delete cascade not null,
+  playlist_id text references public.user_playlists(id) on delete cascade not null,
   track_id text not null,
   user_id uuid references auth.users on delete cascade not null,
   sort_order integer default 0,
   added_at timestamptz default now(),
   primary key (playlist_id, track_id)
 );
+
+create index if not exists idx_user_playlist_tracks_playlist on public.user_playlist_tracks(playlist_id);
 
 -- ==============================================================================
 -- Row-Level Security (RLS) Configuration
@@ -83,69 +90,128 @@ alter table public.user_playlists enable row level security;
 alter table public.user_playlist_tracks enable row level security;
 
 -- Profiles Policies
+drop policy if exists "Users can view own profile" on public.profiles;
 create policy "Users can view own profile"
   on public.profiles for select
   using (auth.uid() = id);
 
+drop policy if exists "Users can insert own profile" on public.profiles;
 create policy "Users can insert own profile"
   on public.profiles for insert
   with check (auth.uid() = id);
 
+drop policy if exists "Users can update own profile" on public.profiles;
 create policy "Users can update own profile"
   on public.profiles for update
   using (auth.uid() = id);
 
+drop policy if exists "Users can delete own profile" on public.profiles;
 create policy "Users can delete own profile"
   on public.profiles for delete
   using (auth.uid() = id);
 
--- User Tracks Policies (auth.uid() = user_id)
+-- User Tracks Policies
+drop policy if exists "Users can select own tracks" on public.user_tracks;
 create policy "Users can select own tracks"
   on public.user_tracks for select
-  using (auth.uid() = user_id);
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.user_playlist_tracks pt
+      join public.user_playlists p on p.id = pt.playlist_id
+      where pt.track_id = user_tracks.id
+      and p.share_code is not null
+    )
+  );
 
+drop policy if exists "Users can insert own tracks" on public.user_tracks;
 create policy "Users can insert own tracks"
   on public.user_tracks for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can update own tracks" on public.user_tracks;
 create policy "Users can update own tracks"
   on public.user_tracks for update
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own tracks" on public.user_tracks;
 create policy "Users can delete own tracks"
   on public.user_tracks for delete
   using (auth.uid() = user_id);
 
--- User Playlists Policies (auth.uid() = user_id)
+-- User Playlists Policies
+drop policy if exists "Users can select own playlists" on public.user_playlists;
 create policy "Users can select own playlists"
   on public.user_playlists for select
-  using (auth.uid() = user_id);
+  using (auth.uid() = user_id or share_code is not null);
 
+drop policy if exists "Users can insert own playlists" on public.user_playlists;
 create policy "Users can insert own playlists"
   on public.user_playlists for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can update own playlists" on public.user_playlists;
 create policy "Users can update own playlists"
   on public.user_playlists for update
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own playlists" on public.user_playlists;
 create policy "Users can delete own playlists"
   on public.user_playlists for delete
   using (auth.uid() = user_id);
 
--- User Playlist Tracks Policies (auth.uid() = user_id)
+-- User Playlist Tracks Policies
+drop policy if exists "Users can select own playlist tracks" on public.user_playlist_tracks;
 create policy "Users can select own playlist tracks"
   on public.user_playlist_tracks for select
-  using (auth.uid() = user_id);
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.user_playlists
+      where id = user_playlist_tracks.playlist_id
+      and share_code is not null
+    )
+  );
 
+drop policy if exists "Users can insert own playlist tracks" on public.user_playlist_tracks;
 create policy "Users can insert own playlist tracks"
   on public.user_playlist_tracks for insert
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can update own playlist tracks" on public.user_playlist_tracks;
 create policy "Users can update own playlist tracks"
   on public.user_playlist_tracks for update
   using (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own playlist tracks" on public.user_playlist_tracks;
 create policy "Users can delete own playlist tracks"
   on public.user_playlist_tracks for delete
   using (auth.uid() = user_id);
+
+-- ==============================================================================
+-- 5. Supabase Storage: User Avatars Bucket
+-- ==============================================================================
+
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do nothing;
+
+drop policy if exists "Avatar images are publicly accessible" on storage.objects;
+create policy "Avatar images are publicly accessible"
+  on storage.objects for select
+  using (bucket_id = 'avatars');
+
+drop policy if exists "Users can upload own avatar" on storage.objects;
+create policy "Users can upload own avatar"
+  on storage.objects for insert
+  with check (bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]);
+
+drop policy if exists "Users can update own avatar" on storage.objects;
+create policy "Users can update own avatar"
+  on storage.objects for update
+  using (bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]);
+
+drop policy if exists "Users can delete own avatar" on storage.objects;
+create policy "Users can delete own avatar"
+  on storage.objects for delete
+  using (bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]);

@@ -9,7 +9,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '@/types/music';
 import { resumeAudio } from '@/services/audioService';
-import { usePlayerStore } from '@/store/playerStore';
+import { usePlayerStore, PlaybackContext } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import ConfirmModal from '@/components/ConfirmModal';
 import { createStyles } from './TrackItem.styles';
@@ -17,6 +17,7 @@ import { createStyles } from './TrackItem.styles';
 interface TrackItemProps {
   track: Track;
   queue: Track[];
+  playbackContext?: PlaybackContext | null;
   onDelete?: (id: string) => void;
   downloadProgress?: number;
   onCancelDownload?: (id: string) => void;
@@ -28,6 +29,7 @@ interface TrackItemProps {
   dragHandleProps?: any;
   onLongPress?: () => void;
   onAddToPlaylist?: (track: Track) => void;
+  onPlay?: () => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -40,6 +42,7 @@ function formatDuration(seconds: number): string {
 export default function TrackItem({
   track,
   queue,
+  playbackContext,
   onDelete,
   downloadProgress,
   onCancelDownload,
@@ -51,6 +54,7 @@ export default function TrackItem({
   dragHandleProps,
   onLongPress,
   onAddToPlaylist,
+  onPlay,
 }: TrackItemProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
@@ -60,10 +64,21 @@ export default function TrackItem({
 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const isCurrent = currentTrack?.id === track.id;
+  const isUnavailable = !track.local_audio_uri && !track.is_streaming;
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const handlePress = () => {
+    onPlay?.();
+    if (isUnavailable) {
+      // If tapped and file is not on device, find next playable track in queue so playback continues
+      const nextPlayable = queue.find((t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id);
+      if (nextPlayable) {
+        playTrack(nextPlayable, queue, playbackContext);
+      }
+      return;
+    }
+
     if (isCurrent) {
       if (!isPlaying) {
         resumeAudio();
@@ -72,7 +87,7 @@ export default function TrackItem({
         togglePlayPause();
       }
     } else {
-      playTrack(track, queue);
+      playTrack(track, queue, playbackContext);
     }
   };
 
@@ -115,6 +130,14 @@ export default function TrackItem({
           <Text style={styles.duration}>
             {formatDuration(track.duration)}
           </Text>
+          {isUnavailable && downloadProgress === undefined && (
+            <>
+              <Text style={styles.metaDot}>•</Text>
+              <Text style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
+                Offline / Not on device
+              </Text>
+            </>
+          )}
         </View>
       </View>
 

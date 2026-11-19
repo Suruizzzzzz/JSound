@@ -1,6 +1,6 @@
 import 'react-native-url-polyfill/auto';
 import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { View, LogBox } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -11,6 +11,12 @@ import { getAllTracks } from '@/repositories/trackRepository';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/store/authStore';
+
+// Safeguard against Expo Go NativeJSLogger warnings for unbound AudioControlsService
+LogBox.ignoreLogs([
+  'Failed to activate lock screen controls',
+  'Failed to start the expo-audio playback service',
+]);
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
