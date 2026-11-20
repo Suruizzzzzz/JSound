@@ -1,13 +1,14 @@
 import 'react-native-url-polyfill/auto';
 import React, { useEffect, useState } from 'react';
 import { View, LogBox } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { requestNotificationPermissionsAsync } from 'expo-audio';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { initDatabase, getSetting } from '@/lib/database';
+import { initDatabase, getSetting, setSetting } from '@/lib/database';
 import { getAllTracks } from '@/repositories/trackRepository';
+import { supabase } from '@/services/supabase';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/store/authStore';
@@ -22,11 +23,26 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const router = useRouter();
+  const pathname = usePathname();
   const [isReady, setIsReady] = useState(false);
   const [shouldRedirectToTabs, setShouldRedirectToTabs] = useState(false);
   const setTracks = usePlayerStore((state) => state.setTracks);
   const mode = useThemeStore((state) => state.mode);
   const initTheme = useThemeStore((state) => state.initTheme);
+
+  // Auto-redirect to /(tabs) when authenticated if currently on welcome or auth screens
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user && (pathname === '/auth' || pathname === '/' || pathname === '/index')) {
+        setSetting('has_seen_welcome', 'true').catch(() => {});
+        router.replace('/(tabs)');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [pathname, router]);
 
   useEffect(() => {
     async function prepare() {

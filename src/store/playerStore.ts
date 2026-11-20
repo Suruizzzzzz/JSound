@@ -165,7 +165,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       await loadAndPlayAudio(
         audioSource,
         (status) => {
-          const position = status.currentTime ?? 0;
+          const rawPosition = status.currentTime ?? 0;
           const duration = status.duration > 0 ? status.duration : (track.duration || 0);
 
           // While buffering or loading stream, do not flip isPlaying to false prematurely
@@ -174,14 +174,33 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
             status.timeControlStatus === 'waiting' ||
             !status.isLoaded;
 
-          set((prevState) => ({
-            isPlaying: isBuffering ? true : status.playing,
-            isLoading: isBuffering,
-            position,
-            duration,
-          }));
+          set((prevState) => {
+            // Guard against transient 0 during seeking or intermediate buffering
+            let nextPosition = prevState.position;
+            if (
+              typeof status.currentTime === 'number' &&
+              !isNaN(status.currentTime) &&
+              status.currentTime >= 0
+            ) {
+              if (
+                status.currentTime > 0 ||
+                status.didJustFinish ||
+                prevState.position < 1 ||
+                !status.playing
+              ) {
+                nextPosition = status.currentTime;
+              }
+            }
 
-          if (status.didJustFinish && (position > 1 || (duration > 0 && position >= duration - 1.5))) {
+            return {
+              isPlaying: isBuffering ? true : status.playing,
+              isLoading: isBuffering,
+              position: nextPosition,
+              duration,
+            };
+          });
+
+          if (status.didJustFinish && (rawPosition > 1 || (duration > 0 && rawPosition >= duration - 1.5))) {
             const currentRepeat = get().repeatMode;
             const autoPlay = get().autoPlay;
             if (currentRepeat === 'one') {

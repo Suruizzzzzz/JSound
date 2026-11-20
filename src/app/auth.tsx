@@ -31,6 +31,15 @@ export default function AuthScreen() {
   const checkEmailConfirmed = useAuthStore((state) => state.checkEmailConfirmed);
   const signInWithGoogle = useAuthStore((state) => state.signInWithGoogle);
   const setGuestSession = useAuthStore((state) => state.setGuestSession);
+  const user = useAuthStore((state) => state.user);
+
+  // Auto-redirect to Library tabs immediately upon user login or session detection
+  useEffect(() => {
+    if (user?.is_logged_in) {
+      setSetting('has_seen_welcome', 'true').catch(() => {});
+      router.replace('/(tabs)');
+    }
+  }, [user?.is_logged_in, router]);
 
   // Theme-adaptive logo
   const logoSource = useMemo(

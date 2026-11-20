@@ -17,6 +17,8 @@ let statusSubscription: EventSubscription | null = null;
 let currentStatusCallback: ((status: AudioStatus) => void) | null = null;
 let isAudioModeConfigured = false;
 let shouldAutoPlay = true;
+let currentTrackMetadata: AudioMetadata | null = null;
+let hasSyncedLockScreenForCurrentTrack = false;
 
 // Native foreground AudioControlsService binding is enabled by default in all compiled/standalone builds.
 // Only skip when explicitly running inside Expo Go client where background service bindings trigger LogBox errors.
@@ -31,11 +33,73 @@ const isExpoGo =
 const DEFAULT_LOCK_SCREEN_OPTIONS: AudioLockScreenOptions = {
   showNextTrack: true,
   showPreviousTrack: true,
-  showSeekForward: true,
-  showSeekBackward: true,
-  seekForwardIntervalSeconds: 10,
-  seekBackwardIntervalSeconds: 10,
+  showSeekForward: false,
+  showSeekBackward: false,
 };
+
+function attachStatusListener(player: AudioPlayer) {
+  if (statusSubscription) {
+    try {
+      statusSubscription.remove();
+    } catch {
+      // ignore
+    }
+    statusSubscription = null;
+  }
+
+  statusSubscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+    if ('error' in status && (status as any).error) {
+      console.error('[AudioService] Playback error:', (status as any).error);
+    }
+
+    // Play-before-loaded race condition fix:
+    // As soon as ExoPlayer reports isLoaded === true, start playback if auto-play is requested!
+    if (status.isLoaded && !status.playing && shouldAutoPlay) {
+      console.log('[AudioService] Media loaded! Triggering player.play()...');
+      try {
+        player.play();
+      } catch (playErr) {
+        console.warn('[AudioService] Error calling player.play():', playErr);
+      }
+    }
+
+    if (status.playing) {
+      shouldAutoPlay = false;
+    }
+
+    // Sync lock-screen metadata and duration after media is fully loaded and duration is known (> 0)
+    if (
+      !isExpoGo &&
+      status.isLoaded &&
+      status.duration > 0 &&
+      !hasSyncedLockScreenForCurrentTrack &&
+      currentTrackMetadata
+    ) {
+      hasSyncedLockScreenForCurrentTrack = true;
+      try {
+        if (typeof player.setActiveForLockScreen === 'function') {
+          const res: any = (player as any).setActiveForLockScreen(
+            true,
+            currentTrackMetadata,
+            DEFAULT_LOCK_SCREEN_OPTIONS
+          );
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        } else if (typeof player.updateLockScreenMetadata === 'function') {
+          const res: any = (player as any).updateLockScreenMetadata(currentTrackMetadata);
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        }
+      } catch (lockErr) {
+        console.warn('[AudioService] Failed to sync lock screen metadata on load:', lockErr);
+      }
+    }
+
+    currentStatusCallback?.(status);
+  });
+}
 
 export async function ensureAudioMode(): Promise<void> {
   if (isAudioModeConfigured) return;
@@ -73,6 +137,8 @@ export async function loadAndPlayAudio(
   await ensureAudioMode();
   currentStatusCallback = onStatusUpdate;
   shouldAutoPlay = true;
+  currentTrackMetadata = metadata || null;
+  hasSyncedLockScreenForCurrentTrack = false;
 
   const source: AudioSource =
     typeof uriOrSource === 'string'
@@ -106,37 +172,26 @@ export async function loadAndPlayAudio(
   try {
     if (playerInstance) {
       try {
+        // Reattach listener with latest callback & metadata context
+        attachStatusListener(playerInstance);
+
         // Reuse existing player with .replace()
         playerInstance.replace(source);
 
-        // Update system lock screen & media notification metadata unless in Expo Go
-        if (!isExpoGo && metadata) {
-          try {
-            if (typeof playerInstance.setActiveForLockScreen === 'function') {
-              const res: any = (playerInstance as any).setActiveForLockScreen(
-                true,
-                metadata,
-                DEFAULT_LOCK_SCREEN_OPTIONS
-              );
-              if (res && typeof res.catch === 'function') {
-                res.catch(() => {});
-              }
-            } else if (typeof playerInstance.updateLockScreenMetadata === 'function') {
-              const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
-              if (res && typeof res.catch === 'function') {
-                res.catch(() => {});
-              }
-            }
-          } catch {
-            // Silently ignore if native lock screen controls service is not bound
-          }
-        }
-
-        // If player is already loaded, start playback immediately
+        // If player is already loaded with this item, start playback immediately
         if (playerInstance.isLoaded) {
           console.log('[AudioService] Player already loaded on replace. Starting playback...');
           playerInstance.play();
           shouldAutoPlay = false;
+        } else {
+          // Safety check in case native player loaded synchronously before status update fired
+          setTimeout(() => {
+            if (playerInstance?.isLoaded && shouldAutoPlay) {
+              console.log('[AudioService] Deferred loaded check triggered play()');
+              playerInstance.play();
+              shouldAutoPlay = false;
+            }
+          }, 60);
         }
         return playerInstance;
       } catch (replaceErr) {
@@ -154,46 +209,8 @@ export async function loadAndPlayAudio(
     });
     playerInstance = player;
 
-    // Enable system media notification and lock screen controls unless in Expo Go
-    if (!isExpoGo && metadata && typeof player.setActiveForLockScreen === 'function') {
-      try {
-        const res: any = (player as any).setActiveForLockScreen(
-          true,
-          metadata,
-          DEFAULT_LOCK_SCREEN_OPTIONS
-        );
-        if (res && typeof res.catch === 'function') {
-          res.catch(() => {});
-        }
-      } catch {
-        // Silently ignore if native lock screen controls service is not bound
-      }
-    }
-
     // Attach listener BEFORE calling play to catch early status updates & prevent race conditions
-    statusSubscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
-      // Log any playback error from native layer
-      if ('error' in status && (status as any).error) {
-        console.error('[AudioService] Playback error:', (status as any).error);
-      }
-
-      // Play-before-loaded race condition fix:
-      // The exact millisecond ExoPlayer reports isLoaded === true, start playback!
-      if (status.isLoaded && !status.playing && shouldAutoPlay) {
-        console.log('[AudioService] Media loaded! Triggering player.play()...');
-        try {
-          player.play();
-        } catch (playErr) {
-          console.warn('[AudioService] Error calling player.play():', playErr);
-        }
-      }
-
-      if (status.playing) {
-        shouldAutoPlay = false;
-      }
-
-      currentStatusCallback?.(status);
-    });
+    attachStatusListener(player);
 
     // Proactively call play() if already loaded, otherwise listener will trigger it
     if (player.isLoaded) {
@@ -284,6 +301,7 @@ export async function stopAndUnloadAudio(): Promise<void> {
 }
 
 export function updateAudioMetadata(metadata: AudioMetadata): void {
+  currentTrackMetadata = metadata;
   if (isExpoGo || !playerInstance) return;
   try {
     if (typeof playerInstance.setActiveForLockScreen === 'function') {

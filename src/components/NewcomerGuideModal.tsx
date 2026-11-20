@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Animated,
   StyleSheet,
   Easing,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,8 +29,6 @@ import { getAllTracks } from '@/repositories/trackRepository';
 import { setSetting } from '@/lib/database';
 import {
   createStyles,
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
 } from '@/styles/NewcomerGuideModal.styles';
 
 interface CoachStep {
@@ -178,10 +177,12 @@ const runAfterInteractions = (fn: () => void) => {
 export default function NewcomerGuideModal() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const containerRef = useRef<any>(null);
   const theme = useThemeStore((state) => state.theme);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
-  // Compute status bar offset for Android edge-to-edge window measurement
+  // Fallback status bar offset for pre-measurement geometry
   const yOffset =
     Platform.OS === 'android'
       ? insets.top || StatusBar.currentHeight || 0
@@ -246,8 +247,39 @@ export default function NewcomerGuideModal() {
     if (measuredRectInfo && measuredRectInfo.step === currentStep) {
       return measuredRectInfo.rect;
     }
-    return stepData.fallbackRect(SCREEN_WIDTH, SCREEN_HEIGHT, yOffset);
-  }, [measuredRectInfo, currentStep, stepData, yOffset]);
+    return stepData.fallbackRect(windowWidth, windowHeight, yOffset);
+  }, [measuredRectInfo, currentStep, stepData, windowWidth, windowHeight, yOffset]);
+
+  // Measure target ref and normalize strictly against modal container coordinates
+  const measureTargetRelative = (targetKey: GuideTargetKey): Promise<TargetRect | null> => {
+    return new Promise((resolve) => {
+      requestAnimationFrame(async () => {
+        const measured = await measureGuideTarget(targetKey);
+        if (!measured || measured.width <= 0 || measured.height <= 0) {
+          resolve(null);
+          return;
+        }
+
+        if (containerRef.current && typeof containerRef.current.measureInWindow === 'function') {
+          containerRef.current.measureInWindow((modalX: number, modalY: number) => {
+            resolve({
+              x: Math.round(measured.x - (modalX || 0)),
+              y: Math.round(measured.y - (modalY || 0)),
+              width: Math.round(measured.width),
+              height: Math.round(measured.height),
+            });
+          });
+        } else {
+          resolve({
+            x: Math.round(measured.x),
+            y: Math.round(measured.y),
+            width: Math.round(measured.width),
+            height: Math.round(measured.height),
+          });
+        }
+      });
+    });
+  };
 
   // Handle hardware back button on Android to dismiss the guide
   useEffect(() => {
@@ -288,7 +320,7 @@ export default function NewcomerGuideModal() {
       settleTimer = setTimeout(() => {
         const attemptMeasurement = async (attemptsLeft = 5) => {
           if (!isMounted) return;
-          const measured = await measureGuideTarget(current.targetKey);
+          const measured = await measureTargetRelative(current.targetKey);
           if (!isMounted) return;
 
           if (measured && measured.width > 0 && measured.height > 0) {
@@ -296,7 +328,6 @@ export default function NewcomerGuideModal() {
               step: currentStep,
               rect: {
                 ...measured,
-                y: measured.y + yOffset,
                 borderRadius: current.borderRadius,
               },
             });
@@ -331,7 +362,7 @@ export default function NewcomerGuideModal() {
       if (settleTimer) clearTimeout(settleTimer);
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [isOpen, currentStep, isPlayerModalOpen, router, yOffset, fadeAnim]);
+  }, [isOpen, currentStep, isPlayerModalOpen, router, windowWidth, windowHeight, fadeAnim]);
 
   // Pause and hide walkthrough overlay whenever the full-screen player is open
   if (!isOpen || isPlayerModalOpen) {
@@ -446,16 +477,16 @@ export default function NewcomerGuideModal() {
   // For Step 6 (Download button on search result), position tooltip strictly below the row so the result is visible.
   const isStep4 = currentStep === 3;
   const isStep6 = currentStep === 5;
-  const spaceBelow = SCREEN_HEIGHT - targetBottom;
+  const spaceBelow = windowHeight - targetBottom;
   const isBelow = isStep6 || (!isStep4 && spaceBelow >= 210);
 
   const tooltipStyle = isBelow
-    ? { top: Math.min(SCREEN_HEIGHT - 210, targetBottom + 12) }
-    : { bottom: Math.max(tabBarHeight + 16, SCREEN_HEIGHT - targetTop + 16) };
+    ? { top: Math.min(windowHeight - 210, targetBottom + 12) }
+    : { bottom: Math.max(tabBarHeight + 16, windowHeight - targetTop + 16) };
 
   // Calculate arrow position pointing to target horizontal center
   const targetCenterX = activeRect.x + activeRect.width / 2;
-  const arrowLeft = Math.max(28, Math.min(SCREEN_WIDTH - 48, targetCenterX - 7));
+  const arrowLeft = Math.max(28, Math.min(windowWidth - 48, targetCenterX - 7));
 
   const messageText =
     typeof stepData.message === 'function'
@@ -463,15 +494,15 @@ export default function NewcomerGuideModal() {
       : stepData.message;
 
   return (
-    <View style={styles.container} pointerEvents="box-none">
+    <View ref={containerRef} style={styles.container} pointerEvents="box-none">
       {/* 1. Full-screen SVG overlay with crisp rounded-rectangle mask cutout */}
       <Animated.View
         pointerEvents="none"
         style={[styles.svgOverlay, { opacity: fadeAnim }]}
       >
         <Svg
-          width={SCREEN_WIDTH}
-          height={SCREEN_HEIGHT}
+          width={windowWidth}
+          height={windowHeight}
           style={StyleSheet.absoluteFill}
         >
           <Defs>
@@ -480,8 +511,8 @@ export default function NewcomerGuideModal() {
               <Rect
                 x={0}
                 y={0}
-                width={SCREEN_WIDTH}
-                height={SCREEN_HEIGHT}
+                width={windowWidth}
+                height={windowHeight}
                 fill="#FFFFFF"
               />
               {/* Black punches out a smooth, anti-aliased rounded-rectangle hole */}
@@ -501,8 +532,8 @@ export default function NewcomerGuideModal() {
           <Rect
             x={0}
             y={0}
-            width={SCREEN_WIDTH}
-            height={SCREEN_HEIGHT}
+            width={windowWidth}
+            height={windowHeight}
             fill="rgba(0, 0, 0, 0.82)"
             mask="url(#spotlightMask)"
           />
