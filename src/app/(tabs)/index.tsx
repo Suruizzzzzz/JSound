@@ -368,15 +368,84 @@ export default function LibraryScreen() {
     };
   }, []);
 
-  // Dismiss Add Music modal on Android hardware back button
-  useEffect(() => {
-    if (!showAddMusicModal) return;
-    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
-      setShowAddMusicModal(false);
-      return true;
-    });
-    return () => backSub.remove();
-  }, [showAddMusicModal]);
+  // Handle Android hardware back button cleanly on Library screen
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'android') return;
+
+      const onBackPress = () => {
+        // 1. If any modal or open sheet is visible, dismiss it first
+        if (showAddMusicModal) {
+          setShowAddMusicModal(false);
+          return true;
+        }
+        if (showSortModal) {
+          setShowSortModal(false);
+          return true;
+        }
+        if (showCreateModal) {
+          setShowCreateModal(false);
+          return true;
+        }
+        if (showEditNameModal) {
+          setShowEditNameModal(false);
+          return true;
+        }
+        if (showImportModal) {
+          setShowImportModal(false);
+          return true;
+        }
+        if (showPlaylistCoverActionModal) {
+          setShowPlaylistCoverActionModal(false);
+          return true;
+        }
+        if (showPlaylistMenuModal) {
+          setShowPlaylistMenuModal(false);
+          return true;
+        }
+        if (trackToAddToPlaylist) {
+          setTrackToAddToPlaylist(null);
+          return true;
+        }
+        if (confirmConfig.visible) {
+          setConfirmConfig((prev) => ({ ...prev, visible: false }));
+          return true;
+        }
+        if (selectedPlaylist) {
+          setSelectedPlaylist(null);
+          return true;
+        }
+        const guideState = useGuideStore.getState();
+        if (guideState.isOpen) {
+          guideState.closeGuide();
+          return true;
+        }
+        const playerState = usePlayerStore.getState();
+        if (playerState.isModalOpen) {
+          playerState.setModalOpen(false);
+          return true;
+        }
+
+        // 2. When at the root Library view with no open modals, cleanly exit app
+        BackHandler.exitApp();
+        return true;
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }, [
+      showAddMusicModal,
+      showSortModal,
+      showCreateModal,
+      showEditNameModal,
+      showImportModal,
+      showPlaylistCoverActionModal,
+      showPlaylistMenuModal,
+      trackToAddToPlaylist,
+      confirmConfig.visible,
+      selectedPlaylist,
+    ])
+  );
 
   const handleScanMusic = async () => {
     if (isScanning || isImporting) return;

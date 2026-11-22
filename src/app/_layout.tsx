@@ -1,12 +1,12 @@
 import 'react-native-url-polyfill/auto';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { View, LogBox } from 'react-native';
 import { Stack, useRouter, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { requestNotificationPermissionsAsync } from 'expo-audio';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { initDatabase, getSetting, setSetting } from '@/lib/database';
+import { initDatabase, setSetting } from '@/lib/database';
 import { getAllTracks } from '@/repositories/trackRepository';
 import { supabase } from '@/services/supabase';
 import { usePlayerStore } from '@/store/playerStore';
@@ -24,8 +24,6 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 export default function RootLayout() {
   const router = useRouter();
   const pathname = usePathname();
-  const [isReady, setIsReady] = useState(false);
-  const [shouldRedirectToTabs, setShouldRedirectToTabs] = useState(false);
   const setTracks = usePlayerStore((state) => state.setTracks);
   const mode = useThemeStore((state) => state.mode);
   const theme = useThemeStore((state) => state.theme);
@@ -76,47 +74,25 @@ export default function RootLayout() {
             console.warn('Failed to request notification permission:', permErr);
           }
         }
-
-        // Check if user has already seen onboarding
-        const seenWelcome = await getSetting('has_seen_welcome').catch(() => null);
-        if (isMounted && seenWelcome === 'true') {
-          setShouldRedirectToTabs(true);
-        }
       } catch (e) {
         console.warn('Initialization error:', e);
       } finally {
-        if (isMounted) {
-          setIsReady(true);
-        }
         await SplashScreen.hideAsync().catch(() => {});
       }
     }
 
     prepare();
 
-    // Guaranteed failsafe: dismiss splash screen within 2.5s even if startup async hangs
+    // Guaranteed failsafe: dismiss splash screen within 1000ms even if startup async hangs
     const failsafeTimer = setTimeout(() => {
-      if (isMounted) {
-        setIsReady(true);
-      }
       SplashScreen.hideAsync().catch(() => {});
-    }, 2500);
+    }, 1000);
 
     return () => {
       isMounted = false;
       clearTimeout(failsafeTimer);
     };
   }, [setTracks, initTheme]);
-
-  useEffect(() => {
-    if (isReady && shouldRedirectToTabs) {
-      router.replace('/(tabs)');
-    }
-  }, [isReady, shouldRedirectToTabs, router]);
-
-  if (!isReady) {
-    return null;
-  }
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>

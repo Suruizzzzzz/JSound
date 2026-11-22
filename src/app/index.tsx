@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useRootNavigationState } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useThemeStore } from '@/store/themeStore';
@@ -19,6 +19,7 @@ import { createStyles } from '@/styles/welcome.styles';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const rootNavState = useRootNavigationState();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const setGuestSession = useAuthStore((state) => state.setGuestSession);
@@ -169,6 +170,9 @@ export default function WelcomeScreen() {
     useCallback(() => {
       let isMounted = true;
 
+      // Confirm root <Stack> navigator is mounted and ready before attempting navigation
+      if (!rootNavState?.key) return;
+
       async function checkExistingWelcome() {
         try {
           const seen = await getSetting('has_seen_welcome');
@@ -197,13 +201,13 @@ export default function WelcomeScreen() {
           setIsCheckingWelcome(false);
         }
         SplashScreen.hideAsync().catch(() => {});
-      }, 2500);
+      }, 1000);
 
       return () => {
         isMounted = false;
         clearTimeout(failsafeTimer);
       };
-    }, [router])
+    }, [router, rootNavState?.key])
   );
 
   const handleGetStarted = () => {
