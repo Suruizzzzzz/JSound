@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Platform,
   ScrollView,
   BackHandler,
+  Animated,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -99,6 +100,94 @@ export default function LibraryScreen() {
 
   // Tab State: 'songs' | 'playlists'
   const [activeTab, setActiveTab] = useState<LibraryTab>('songs');
+
+  // Guide demo store bindings & Library highlight / safe auto-play
+  const demoAction = useGuideStore((state) => state.demoAction);
+  const demoNonce = useGuideStore((state) => state.demoNonce);
+  const [pulseAnim] = useState(() => new Animated.Value(0));
+  const autoPlayedDemoNonceRef = useRef<number>(-1);
+
+  const demoTargetTrack = useMemo(() => {
+    if (demoAction !== 'highlight_saved_library') return null;
+    return (
+      tracks.find((t) => {
+        const title = (t.title || '').toLowerCase();
+        const artist = (t.artist || '').toLowerCase();
+        const matches =
+          title.includes('about you') && (artist.includes('1975') || title.includes('1975'));
+        return matches && !!t.local_audio_uri;
+      }) || null
+    );
+  }, [demoAction, tracks]);
+
+  const highlightedTrackId = useMemo(() => {
+    if (demoAction !== 'highlight_saved_library') return null;
+    if (demoTargetTrack) return demoTargetTrack.id;
+    const fallback = tracks.find((t) => {
+      const title = (t.title || '').toLowerCase();
+      const artist = (t.artist || '').toLowerCase();
+      return title.includes('about you') && (artist.includes('1975') || title.includes('1975'));
+    });
+    return fallback ? fallback.id : (tracks[0]?.id ?? null);
+  }, [demoAction, demoTargetTrack, tracks]);
+
+  useEffect(() => {
+    if (highlightedTrackId) {
+      pulseAnim.setValue(0);
+      const pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 900,
+            useNativeDriver: false,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0,
+            duration: 900,
+            useNativeDriver: false,
+          }),
+        ])
+      );
+      pulseLoop.start();
+      return () => pulseLoop.stop();
+    } else {
+      pulseAnim.setValue(0);
+    }
+  }, [highlightedTrackId, pulseAnim]);
+
+  // Safe auto-play for Step 5 after short 250ms transition delay
+  useEffect(() => {
+    if (
+      demoAction === 'highlight_saved_library' &&
+      demoTargetTrack &&
+      demoTargetTrack.local_audio_uri &&
+      autoPlayedDemoNonceRef.current !== demoNonce
+    ) {
+      autoPlayedDemoNonceRef.current = demoNonce;
+      const timer = setTimeout(async () => {
+        try {
+          const currentOfflineTracks = usePlayerStore.getState().tracks;
+          await playTrack(demoTargetTrack, currentOfflineTracks, {
+            type: 'library',
+            name: 'Local Offline Tracks',
+          });
+        } catch (playErr) {
+          console.warn('[DemoAutoplay] Failed to play demo track:', playErr);
+        }
+      }, 250);
+
+      return () => clearTimeout(timer);
+    }
+  }, [demoAction, demoNonce, demoTargetTrack, playTrack]);
+
+  const animatedBorderColor = useMemo(
+    () =>
+      pulseAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [theme.border, theme.primary],
+      }),
+    [pulseAnim, theme.border, theme.primary]
+  );
 
   // Scanner & library states
   const [isScanning, setIsScanning] = useState(false);
@@ -688,6 +777,7 @@ export default function LibraryScreen() {
       const imported = await importSharedPlaylist(sharedPreview);
       await loadPlaylists();
 
+      const currentOfflineTracks = await getAllTracks().catch(() => []);
       for (let i = 0; i < sharedPreview.tracks.length; i++) {
         const track = sharedPreview.tracks[i];
         setDownloadSharedProgress({
@@ -696,6 +786,21 @@ export default function LibraryScreen() {
           title: track.title,
           pct: 0,
         });
+
+        // Zero-duplicate check: if track is already downloaded locally with valid audio, skip downloading
+        const normTitle = (track.title || '').trim().toLowerCase();
+        const normArtist = (track.artist || '').trim().toLowerCase();
+        const alreadyDownloaded = currentOfflineTracks.find((loc) => {
+          if (loc.id === track.id && loc.local_audio_uri) return true;
+          if (track.youtube_id && loc.youtube_id === track.youtube_id && loc.local_audio_uri) return true;
+          const locTitle = (loc.title || '').trim().toLowerCase();
+          const locArtist = (loc.artist || '').trim().toLowerCase();
+          return locTitle === normTitle && locArtist === normArtist && !!loc.local_audio_uri;
+        });
+
+        if (alreadyDownloaded) {
+          continue;
+        }
 
         const onlineId =
           track.youtube_id ||
@@ -1343,38 +1448,48 @@ export default function LibraryScreen() {
         <FlatList
           data={tracks}
           keyExtractor={(item) => item.id}
-          renderItem={({ item, index }) => (
-            <View
-              ref={(r) => {
-                if (index === 0) registerGuideTarget('first_track_item', r);
-              }}
-              collapsable={false}
-              style={styles.trackRowContainer}
-            >
-              <TrackItem
-                track={item}
-                queue={tracks}
-                playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
-                onDelete={handleDeleteTrack}
-                showDragHandle={isReordering}
-                onMoveUp={() => handleMoveTrack(index, index - 1)}
-                onMoveDown={() => handleMoveTrack(index, index + 1)}
-                isFirst={index === 0}
-                isLast={index === tracks.length - 1}
-                onLongPress={handleRowLongPress}
-                onAddToPlaylist={handleOpenAddToPlaylist}
-                onPlay={() => {
-                  const guideState = useGuideStore.getState();
-                  if (guideState.isOpen && guideState.currentStep === 2) {
-                    usePlayerStore.getState().setModalOpen(true);
-                    guideState.setStep(3); // Step 3 -> Step 4 (Search Tab)
-                  } else if (guideState.isOpen && guideState.currentStep === 6) {
-                    guideState.closeGuide(); // Step 7 completed!
-                  }
+          renderItem={({ item, index }) => {
+            const isHighlighted = highlightedTrackId === item.id;
+            return (
+              <Animated.View
+                ref={(r) => {
+                  if (index === 0) registerGuideTarget('first_track_item', r);
                 }}
-              />
-            </View>
-          )}
+                collapsable={false}
+                style={[
+                  styles.trackRowContainer,
+                  isHighlighted && {
+                    borderWidth: 1.5,
+                    borderColor: animatedBorderColor,
+                    borderRadius: 10,
+                    marginHorizontal: 6,
+                    marginVertical: 2,
+                    backgroundColor: theme.primary + '11',
+                  },
+                ]}
+              >
+                <TrackItem
+                  track={item}
+                  queue={tracks}
+                  playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
+                  onDelete={handleDeleteTrack}
+                  showDragHandle={isReordering}
+                  onMoveUp={() => handleMoveTrack(index, index - 1)}
+                  onMoveDown={() => handleMoveTrack(index, index + 1)}
+                  isFirst={index === 0}
+                  isLast={index === tracks.length - 1}
+                  onLongPress={handleRowLongPress}
+                  onAddToPlaylist={handleOpenAddToPlaylist}
+                  onPlay={() => {
+                    const guideState = useGuideStore.getState();
+                    if (guideState.isOpen && guideState.currentStep === 4) {
+                      guideState.closeGuide();
+                    }
+                  }}
+                />
+              </Animated.View>
+            );
+          }}
           ListEmptyComponent={renderEmptySongsState}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}

@@ -8,10 +8,10 @@ import { useThemeStore } from "@/store/themeStore";
 import { useGuideStore } from "@/store/guideStore";
 import { createStyles } from "@/styles/settings.styles";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter, useNavigation } from "expo-router";
-import { CommonActions } from "@react-navigation/native";
-import { useMemo, useState } from "react";
+import { useRouter } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Animated,
   Image,
   ScrollView,
   Switch,
@@ -23,11 +23,39 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const setThemeMode = useThemeStore((state) => state.setThemeMode);
   const styles = useMemo(() => createStyles(theme), [theme]);
+
+  const [segmentAnim] = useState(() => new Animated.Value(mode === "dark" ? 1 : 0));
+  const [segmentWidth, setSegmentWidth] = useState(0);
+
+  useEffect(() => {
+    Animated.spring(segmentAnim, {
+      toValue: mode === "dark" ? 1 : 0,
+      useNativeDriver: true,
+      tension: 90,
+      friction: 11,
+    }).start();
+  }, [mode, segmentAnim]);
+
+  const { iconRotate, iconScale, indicatorTranslateX } = useMemo(() => {
+    return {
+      iconRotate: segmentAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ["0deg", "360deg"],
+      }),
+      iconScale: segmentAnim.interpolate({
+        inputRange: [0, 0.5, 1],
+        outputRange: [1, 0.65, 1],
+      }),
+      indicatorTranslateX: segmentAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, segmentWidth],
+      }),
+    };
+  }, [segmentAnim, segmentWidth]);
 
   const user = useAuthStore((state) => state.user);
   const signOut = useAuthStore((state) => state.signOut);
@@ -80,18 +108,10 @@ export default function SettingsScreen() {
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
     try {
-      await signOut();
       await setSetting('has_seen_welcome', 'false');
-      let rootNav: any = navigation;
-      while (rootNav.getParent()) {
-        rootNav = rootNav.getParent();
-      }
-      rootNav.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'index' }],
-        })
-      );
+      useAuthStore.getState().setGuestSession(false);
+      await signOut();
+      router.replace('/');
     } catch (e) {
       console.warn("Error during logout:", e);
     }
@@ -134,11 +154,17 @@ export default function SettingsScreen() {
           <View style={styles.row}>
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
-                <Ionicons
-                  name={mode === "dark" ? "moon-outline" : "sunny-outline"}
-                  size={18}
-                  color={theme.textPrimary}
-                />
+                <Animated.View
+                  style={{
+                    transform: [{ rotate: iconRotate }, { scale: iconScale }],
+                  }}
+                >
+                  <Ionicons
+                    name={mode === "dark" ? "moon-outline" : "sunny-outline"}
+                    size={18}
+                    color={theme.textPrimary}
+                  />
+                </Animated.View>
               </View>
               <View style={styles.rowTextGroup}>
                 <Text style={styles.rowTitle}>Theme Mode</Text>
@@ -147,11 +173,29 @@ export default function SettingsScreen() {
             </View>
 
             <View style={styles.themeSegmentGroup}>
+              {segmentWidth > 0 && (
+                <Animated.View
+                  style={[
+                    styles.themeSegmentIndicator,
+                    {
+                      width: segmentWidth,
+                      transform: [{ translateX: indicatorTranslateX }],
+                    },
+                  ]}
+                />
+              )}
+
               <TouchableOpacity
                 style={[
                   styles.themeSegmentButton,
-                  mode === "light" && styles.themeSegmentActive,
+                  segmentWidth === 0 && mode === "light" && styles.themeSegmentActive,
                 ]}
+                onLayout={(e) => {
+                  const w = e.nativeEvent.layout.width;
+                  if (w > 0 && Math.abs(w - segmentWidth) > 0.5) {
+                    setSegmentWidth(w);
+                  }
+                }}
                 onPress={() => setThemeMode("light")}
                 activeOpacity={0.8}
               >
@@ -168,7 +212,7 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 style={[
                   styles.themeSegmentButton,
-                  mode === "dark" && styles.themeSegmentActive,
+                  segmentWidth === 0 && mode === "dark" && styles.themeSegmentActive,
                 ]}
                 onPress={() => setThemeMode("dark")}
                 activeOpacity={0.8}

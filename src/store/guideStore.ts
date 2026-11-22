@@ -1,7 +1,20 @@
 import { create } from 'zustand';
 import { getSetting, setSetting } from '@/lib/database';
 
-export const TOTAL_GUIDE_STEPS = 4;
+export const TOTAL_GUIDE_STEPS = 5;
+
+export type GuideDemoAction =
+  | 'idle'
+  | 'autofill_search'
+  | 'trigger_download'
+  | 'highlight_saved_library';
+
+export type DemoDownloadStatus =
+  | 'idle'
+  | 'searching'
+  | 'downloading'
+  | 'done'
+  | 'error';
 
 export type GuideTargetKey =
   | 'add_music_button'
@@ -42,6 +55,13 @@ interface GuideState {
   isOpen: boolean;
   currentStep: number;
   noTracksFound: boolean;
+  demoAction: GuideDemoAction;
+  demoNonce: number;
+  demoDownloadStatus: DemoDownloadStatus;
+  demoDownloadProgress: number;
+  setDemoAction: (action: GuideDemoAction) => void;
+  setDemoDownloadStatus: (status: DemoDownloadStatus) => void;
+  setDemoDownloadProgress: (progress: number) => void;
   setNoTracksFound: (val: boolean) => void;
   requestOpenAddMusicModal?: () => void;
   setRequestOpenAddMusicModal: (fn?: () => void) => void;
@@ -59,6 +79,22 @@ export const useGuideStore = create<GuideState>((set, get) => ({
   isOpen: false,
   currentStep: 0,
   noTracksFound: false,
+  demoAction: 'idle',
+  demoNonce: 0,
+  demoDownloadStatus: 'idle',
+  demoDownloadProgress: 0,
+
+  setDemoAction: (action: GuideDemoAction) => {
+    set((state) => ({ demoAction: action, demoNonce: state.demoNonce + 1 }));
+  },
+
+  setDemoDownloadStatus: (status: DemoDownloadStatus) => {
+    set({ demoDownloadStatus: status });
+  },
+
+  setDemoDownloadProgress: (progress: number) => {
+    set({ demoDownloadProgress: progress });
+  },
 
   setNoTracksFound: (val: boolean) => {
     set({ noTracksFound: val });
@@ -73,13 +109,25 @@ export const useGuideStore = create<GuideState>((set, get) => ({
   },
 
   openGuide: () => {
-    set({ isOpen: true, currentStep: 0, noTracksFound: false });
+    set({
+      isOpen: true,
+      currentStep: 0,
+      noTracksFound: false,
+      demoAction: 'idle',
+      demoDownloadStatus: 'idle',
+      demoDownloadProgress: 0,
+    });
   },
 
   closeGuide: async () => {
     const { requestCloseAddMusicModal } = get();
     requestCloseAddMusicModal?.();
-    set({ isOpen: false });
+    set({
+      isOpen: false,
+      demoAction: 'idle',
+      demoDownloadStatus: 'idle',
+      demoDownloadProgress: 0,
+    });
     try {
       await setSetting('has_seen_onboarding_guide', 'true');
       await setSetting('has_completed_newcomer_guide', 'true');

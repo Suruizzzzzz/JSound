@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -8,6 +8,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useGuideStore, TOTAL_GUIDE_STEPS } from '@/store/guideStore';
 import { useThemeStore } from '@/store/themeStore';
@@ -19,6 +20,7 @@ interface GuideStep {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   description: string;
+  route: string;
   placement: 'top' | 'bottom';
 }
 
@@ -27,43 +29,61 @@ const GUIDE_STEPS: GuideStep[] = [
     id: 'step-library',
     stepNumber: 1,
     icon: 'musical-notes',
-    title: 'Library & Offline Downloads',
+    title: 'Your Offline Library',
     description:
-      'Store and organize your music collection directly on your device. Scan local storage or download any track for high-quality offline listening without using mobile data.',
+      'Welcome to JSound. Every song you save lives right here—ready to play anytime without mobile data or buffering.',
+    route: '/(tabs)',
     placement: 'bottom',
   },
   {
-    id: 'step-search',
+    id: 'step-skip-converter',
     stepNumber: 2,
-    icon: 'search',
-    title: 'Search & Stream',
+    icon: 'flash',
+    title: 'No More Copy-Paste Converter Sites',
     description:
-      'Discover millions of songs and artists online. Stream music instantly with zero delay, or save any song to your local offline library with a single tap.',
-    placement: 'top',
+      'Forget copying URLs into sketchy third-party MP3 converter websites. Tap Search to find any track directly inside the app.',
+    route: '/(tabs)/search',
+    placement: 'bottom',
   },
   {
-    id: 'step-cloud',
+    id: 'step-search-instant',
     stepNumber: 3,
-    icon: 'cloud-done',
-    title: 'Cloud Sync & Playlists',
+    icon: 'search',
+    title: 'Search Any Song Instantly',
     description:
-      'Create personalized playlists and synchronize your favorites across all your devices with your account. Your library remains securely backed up in the cloud.',
-    placement: 'top',
+      "We just searched 'About You' by The 1975 for you—no browser tabs or external links needed.",
+    route: '/(tabs)/search',
+    placement: 'bottom',
   },
   {
-    id: 'step-playback',
+    id: 'step-one-tap-download',
     stepNumber: 4,
-    icon: 'play-circle',
-    title: 'MiniPlayer & Background Audio',
+    icon: 'cloud-download',
+    title: 'One-Tap Offline Download',
     description:
-      'Enjoy uninterrupted audio playback even when your screen is locked or while multitasking in other apps. Control your music quickly via the floating MiniPlayer.',
+      'Tap the download icon on any result. Watch the full-card progress sweep to 100%—when it finishes, the checkmark button marks it saved.',
+    route: '/(tabs)/search',
+    placement: 'bottom',
+  },
+  {
+    id: 'step-saved-ready',
+    stepNumber: 5,
+    icon: 'checkmark-circle',
+    title: 'Saved & Ready to Play',
+    description:
+      'Your downloaded song is automatically stored in your Library for instant offline playback, playlists, and cloud sync.',
+    route: '/(tabs)',
     placement: 'bottom',
   },
 ];
 
 export default function NewcomerGuideModal() {
+  const router = useRouter();
   const isOpen = useGuideStore((state) => state.isOpen);
   const currentStep = useGuideStore((state) => state.currentStep);
+  const setDemoAction = useGuideStore((state) => state.setDemoAction);
+  const demoDownloadStatus = useGuideStore((state) => state.demoDownloadStatus);
+  const demoDownloadProgress = useGuideStore((state) => state.demoDownloadProgress);
   const closeGuide = useGuideStore((state) => state.closeGuide);
   const nextStep = useGuideStore((state) => state.nextStep);
   const prevStep = useGuideStore((state) => state.prevStep);
@@ -72,13 +92,47 @@ export default function NewcomerGuideModal() {
   const theme = useThemeStore((state) => state.theme);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
+  const step = GUIDE_STEPS[currentStep] || GUIDE_STEPS[0];
+  const isFirstStep = currentStep === 0;
+  const isLastStep = currentStep === TOTAL_GUIDE_STEPS - 1;
+  const isStep4Downloading =
+    currentStep === 3 &&
+    (demoDownloadStatus === 'downloading' || demoDownloadStatus === 'searching');
+
+  // Auto-navigate between tabs corresponding to each guide step
+  useEffect(() => {
+    if (!isOpen) return;
+    const targetRoute = GUIDE_STEPS[currentStep]?.route;
+    if (targetRoute) {
+      router.navigate(targetRoute as any);
+    }
+  }, [isOpen, currentStep, router]);
+
+  // Trigger demo automated action corresponding to walkthrough step
+  useEffect(() => {
+    if (!isOpen) {
+      setDemoAction('idle');
+      return;
+    }
+    if (currentStep === 2) {
+      setDemoAction('autofill_search');
+    } else if (currentStep === 3) {
+      setDemoAction('trigger_download');
+    } else if (currentStep === 4) {
+      setDemoAction('highlight_saved_library');
+    } else {
+      setDemoAction('idle');
+    }
+  }, [isOpen, currentStep, setDemoAction]);
+
   if (!isOpen) {
     return null;
   }
 
-  const step = GUIDE_STEPS[currentStep] || GUIDE_STEPS[0];
-  const isFirstStep = currentStep === 0;
-  const isLastStep = currentStep === TOTAL_GUIDE_STEPS - 1;
+  const handleCloseGuide = async () => {
+    router.navigate('/(tabs)');
+    await closeGuide();
+  };
 
   // Compute tab bar height to position card flush above bottom navigation
   const bottomInset =
@@ -95,77 +149,89 @@ export default function NewcomerGuideModal() {
       transparent
       animationType="fade"
       statusBarTranslucent
-      onRequestClose={closeGuide}
+      onRequestClose={handleCloseGuide}
     >
-      <TouchableWithoutFeedback onPress={closeGuide}>
+      <TouchableWithoutFeedback onPress={handleCloseGuide}>
         <View
           style={[
             styles.backdrop,
             isTop
-              ? { justifyContent: 'flex-start', paddingTop: insets.top + 20 }
-              : { justifyContent: 'flex-end', paddingBottom: tabBarHeight + 16 },
+              ? { justifyContent: 'flex-start', paddingTop: insets.top + 16 }
+              : { justifyContent: 'flex-end', paddingBottom: tabBarHeight + 14 },
           ]}
         >
           <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
             <View style={styles.card}>
-              {/* Header: Step Badge & Skip Button */}
-              <View style={styles.headerRow}>
-                <View style={styles.stepBadge}>
-                  <Text style={styles.stepBadgeText}>
-                    Step {step.stepNumber} of {TOTAL_GUIDE_STEPS}
-                  </Text>
+              {/* Top row: small icon badge + Title & Step counter on left, Skip on right */}
+              <View style={styles.topRow}>
+                <View style={styles.topRowLeft}>
+                  <View style={styles.iconBadge}>
+                    <Ionicons name={step.icon} size={18} color={theme.primary} />
+                  </View>
+                  <View style={styles.titleColumn}>
+                    <Text style={styles.title} numberOfLines={1}>
+                      {step.title}
+                    </Text>
+                    <Text style={styles.stepCounterText}>
+                      Step {step.stepNumber} of {TOTAL_GUIDE_STEPS}
+                    </Text>
+                  </View>
                 </View>
 
                 <TouchableOpacity
                   style={styles.skipButton}
-                  onPress={closeGuide}
+                  onPress={handleCloseGuide}
                   activeOpacity={0.7}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Text style={styles.skipButtonText}>Skip</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Icon Badge */}
-              <View style={styles.iconContainer}>
-                <Ionicons name={step.icon} size={28} color={theme.primary} />
-              </View>
+              {/* Middle: concise description */}
+              <Text style={styles.description} numberOfLines={3}>
+                {step.description}
+              </Text>
 
-              {/* Title & Description */}
-              <Text style={styles.title}>{step.title}</Text>
-              <Text style={styles.description}>{step.description}</Text>
+              {/* Bottom row: compact 5-dot step indicator on left, inline Back + Next/Done on right */}
+              <View style={styles.bottomRow}>
+                <View style={styles.dotsRow}>
+                  {GUIDE_STEPS.map((_, index) => (
+                    <View
+                      key={index}
+                      style={[styles.dot, index === currentStep && styles.dotActive]}
+                    />
+                  ))}
+                </View>
 
-              {/* Progress Dots */}
-              <View style={styles.dotsRow}>
-                {GUIDE_STEPS.map((_, index) => (
-                  <View
-                    key={index}
-                    style={[styles.dot, index === currentStep && styles.dotActive]}
-                  />
-                ))}
-              </View>
+                <View style={styles.buttonsRow}>
+                  {!isFirstStep && (
+                    <TouchableOpacity
+                      style={styles.backButton}
+                      onPress={prevStep}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <Text style={styles.backButtonText}>Back</Text>
+                    </TouchableOpacity>
+                  )}
 
-              {/* Footer Buttons */}
-              <View style={styles.footerRow}>
-                {!isFirstStep && (
                   <TouchableOpacity
-                    style={styles.prevButton}
-                    onPress={prevStep}
-                    activeOpacity={0.7}
+                    style={[styles.nextButton, isStep4Downloading && { opacity: 0.6 }]}
+                    onPress={isLastStep ? handleCloseGuide : nextStep}
+                    disabled={isStep4Downloading}
+                    activeOpacity={0.8}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                   >
-                    <Text style={styles.prevButtonText}>Back</Text>
+                    <Text style={styles.nextButtonText}>
+                      {isLastStep
+                        ? 'Done'
+                        : isStep4Downloading
+                        ? `Downloading... ${demoDownloadProgress}%`
+                        : 'Next'}
+                    </Text>
                   </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={styles.nextButton}
-                  onPress={isLastStep ? closeGuide : nextStep}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.nextButtonText}>
-                    {isLastStep ? 'Get Started' : 'Next'}
-                  </Text>
-                </TouchableOpacity>
+                </View>
               </View>
             </View>
           </TouchableWithoutFeedback>

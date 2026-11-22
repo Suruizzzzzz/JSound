@@ -1,6 +1,11 @@
 import { create } from 'zustand';
+import { LayoutAnimation, Platform, UIManager } from 'react-native';
 import { ThemeColors, ThemeMode, Themes } from '@/constants/theme';
 import { getSetting, setSetting } from '@/lib/database';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 interface ThemeState {
   mode: ThemeMode;
@@ -38,20 +43,32 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   toggleTheme: () => {
     const currentMode = get().mode;
     const nextMode: ThemeMode = currentMode === 'dark' ? 'light' : 'dark';
-    set({
-      mode: nextMode,
-      theme: Themes[nextMode],
-    });
-    setSetting('theme_mode', nextMode).catch((e) => {
-      console.warn('Failed to persist theme:', e);
-    });
+    get().setThemeMode(nextMode);
   },
 
   setThemeMode: (mode: ThemeMode) => {
+    const currentMode = get().mode;
+    if (currentMode === mode) {
+      return;
+    }
+
+    try {
+      LayoutAnimation.configureNext(
+        LayoutAnimation.create(
+          180,
+          LayoutAnimation.Types.easeInEaseOut,
+          LayoutAnimation.Properties.opacity
+        )
+      );
+    } catch (e) {
+      console.warn('LayoutAnimation error on theme change:', e);
+    }
+
     set({
       mode,
       theme: Themes[mode],
     });
+
     setSetting('theme_mode', mode).catch((e) => {
       console.warn('Failed to persist theme:', e);
     });

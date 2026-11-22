@@ -13,15 +13,13 @@ import {
   Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useNavigation } from 'expo-router';
-import { CommonActions } from '@react-navigation/native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
-import ConfirmModal from '@/components/ConfirmModal';
 import { getSetting, setSetting, getAllPlaylists } from '@/lib/database';
 import { runAutoDownloadSync } from '@/services/playlistSyncService';
 import { useSyncProgressStore } from '@/store/syncProgressStore';
@@ -39,7 +37,6 @@ function formatTotalTime(totalSeconds: number): string {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -49,7 +46,6 @@ export default function ProfileScreen() {
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
   const setProfileName = useAuthStore((state) => state.setProfileName);
   const setProfileAvatar = useAuthStore((state) => state.setProfileAvatar);
-  const signOut = useAuthStore((state) => state.signOut);
 
   const tracks = usePlayerStore((state) => state.tracks);
 
@@ -57,7 +53,6 @@ export default function ProfileScreen() {
   const [storageUsageMb, setStorageUsageMb] = useState<string | null>(null);
 
   const [showNameModal, setShowNameModal] = useState(false);
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(true);
@@ -242,26 +237,6 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleConfirmLogout = async () => {
-    setShowLogoutModal(false);
-    try {
-      await signOut();
-      await setSetting('has_seen_welcome', 'false');
-      let rootNav: any = navigation;
-      while (rootNav.getParent()) {
-        rootNav = rootNav.getParent();
-      }
-      rootNav.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'index' }],
-        })
-      );
-    } catch (err) {
-      console.warn('Error during sign out:', err);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Subtle JS Monogram Background Watermark */}
@@ -325,20 +300,9 @@ export default function ProfileScreen() {
             />
           </TouchableOpacity>
 
-          <Text style={styles.userEmail}>
-            {user.is_logged_in ? user.email : 'Offline Mode • On-Device Library'}
+          <Text style={styles.userSubtitle}>
+            {user.is_logged_in ? user.email : 'Local Library'}
           </Text>
-
-          <View style={[styles.badgePill, user.is_logged_in && styles.badgePillActive]}>
-            <Text
-              style={[
-                styles.badgePillText,
-                user.is_logged_in && styles.badgePillTextActive,
-              ]}
-            >
-              {user.is_logged_in ? 'PRO SYNC' : 'OFFLINE GUEST'}
-            </Text>
-          </View>
         </View>
 
         {/* 3-Column Stats Strip (Tracks | Playlists | Listening Time) + Offline Storage Footprint */}
@@ -418,26 +382,23 @@ export default function ProfileScreen() {
         )}
 
         {!user.is_logged_in ? (
-          <TouchableOpacity
-            style={styles.accountCard}
-            onPress={() => router.push('/auth')}
-            activeOpacity={0.8}
-          >
-            <View style={styles.accountRow}>
-              <View style={styles.accountLeft}>
-                <View style={styles.accountIconWrap}>
-                  <Ionicons name="person-add-outline" size={18} color={theme.textPrimary} />
-                </View>
-                <View style={styles.accountTextGroup}>
-                  <Text style={styles.accountTitle}>Sign In or Create Account</Text>
-                  <Text style={styles.accountSubtitle}>
-                    Back up &amp; sync your offline library across devices
-                  </Text>
-                </View>
+          <View style={styles.guestReminderCard}>
+            <View style={styles.guestReminderRow}>
+              <View style={styles.accountIconWrap}>
+                <Ionicons name="person-outline" size={18} color={theme.textPrimary} />
               </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+              <Text style={styles.guestReminderText}>
+                Using Guest Mode — Sign in or register to back up your playlists and sync your music across devices
+              </Text>
             </View>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.guestSignInButton}
+              onPress={() => router.push('/auth')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.guestSignInButtonText}>Sign In / Register</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <>
             <View style={styles.accountCard}>
@@ -532,14 +493,16 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Sign Out Button */}
+            {/* Subtle Settings & Sign Out Hint */}
             <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={() => setShowLogoutModal(true)}
+              style={styles.settingsHintRow}
+              onPress={() => router.push('/settings')}
               activeOpacity={0.7}
             >
-              <Ionicons name="log-out-outline" size={18} color={theme.textSecondary} />
-              <Text style={styles.logoutButtonText}>Sign Out</Text>
+              <Ionicons name="settings-outline" size={14} color={theme.textMuted} />
+              <Text style={styles.settingsHintText}>
+                Manage account preferences or sign out anytime in Settings
+              </Text>
             </TouchableOpacity>
           </>
         )}
@@ -633,18 +596,6 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* Sign Out Confirmation Modal */}
-      <ConfirmModal
-        visible={showLogoutModal}
-        title="Sign Out"
-        message="Are you sure you want to sign out? Your offline tracks and local playlists will remain safely stored on this device."
-        icon="log-out-outline"
-        confirmText="Sign Out"
-        isDestructive={true}
-        onConfirm={handleConfirmLogout}
-        onCancel={() => setShowLogoutModal(false)}
-      />
 
       {/* Cloud Sync History Modal */}
       <Modal

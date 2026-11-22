@@ -63,15 +63,13 @@ export const createStyles = (theme: ThemeColors) =>
     clearButton: {
       padding: 4,
     },
-    // Result Row UI
+    // Result Card Outer Wrapper
     resultRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      borderRadius: 12,
+      position: 'relative',
+      overflow: 'visible',
+      borderRadius: 14,
       marginHorizontal: 16,
-      marginVertical: 3,
+      marginVertical: 4,
       backgroundColor: theme.surface,
       borderWidth: 1,
       borderColor: theme.border,
@@ -81,7 +79,27 @@ export const createStyles = (theme: ThemeColors) =>
       borderColor: theme.primary,
     },
     resultRowSaved: {
-      borderColor: theme.primary + '55',
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    // Inner Clipped Container for Progress Fill & Content
+    cardInnerContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 8,
+      paddingHorizontal: 14,
+      borderRadius: 14,
+      overflow: 'hidden',
+      position: 'relative',
+      width: '100%',
+    },
+    progressFill: {
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      left: 0,
+      backgroundColor: theme.primary + '22',
     },
     resultMainArea: {
       flex: 1,
@@ -123,8 +141,9 @@ export const createStyles = (theme: ThemeColors) =>
     },
     resultInfo: {
       flex: 1,
+      minWidth: 0,
       marginLeft: 12,
-      marginRight: 8,
+      marginRight: 12,
     },
     resultTitle: {
       fontSize: 15,
@@ -141,6 +160,7 @@ export const createStyles = (theme: ThemeColors) =>
       marginTop: 3,
     },
     sourceBadge: {
+      flexShrink: 0,
       paddingHorizontal: 5,
       paddingVertical: 1.5,
       borderRadius: 4,
@@ -158,15 +178,17 @@ export const createStyles = (theme: ThemeColors) =>
     },
     resultArtist: {
       fontSize: 13,
-      maxWidth: '55%',
+      flexShrink: 1,
       color: theme.textSecondary,
     },
     resultMetaDot: {
+      flexShrink: 0,
       fontSize: 11,
       marginHorizontal: 5,
       color: theme.textMuted,
     },
     durationBadge: {
+      flexShrink: 0,
       paddingHorizontal: 6,
       paddingVertical: 1.5,
       borderRadius: 4,
@@ -183,87 +205,47 @@ export const createStyles = (theme: ThemeColors) =>
     actionContainer: {
       justifyContent: 'center',
       alignItems: 'center',
-      minWidth: 44,
       marginLeft: 4,
     },
     downloadButton: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
+      width: 34,
+      height: 34,
+      borderRadius: 17,
       borderWidth: 1,
       borderColor: theme.border,
       backgroundColor: theme.surfaceElevated,
       justifyContent: 'center',
       alignItems: 'center',
     },
-    progressIndicatorContainer: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingVertical: 6,
-      paddingHorizontal: 8,
-      borderRadius: 14,
-      backgroundColor: theme.surfaceElevated,
-      borderWidth: 1,
-      borderColor: theme.border,
-      gap: 4,
-    },
-    progressPercentageText: {
-      fontSize: 11,
-      fontWeight: '700',
-      color: theme.primary,
-    },
-    progressCancelIcon: {
-      marginLeft: 2,
-    },
-    savedBookmarkBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingVertical: 5.5,
-      paddingHorizontal: 9,
-      borderRadius: 9,
+    savedPlayButton: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.primary + '55',
-      gap: 4.5,
+      justifyContent: 'center',
+      alignItems: 'center',
     },
-    savedBookmarkBtnPlaying: {
-      backgroundColor: theme.primary,
-      borderColor: theme.primary,
-    },
-    savedBookmarkText: {
-      fontSize: 11.5,
-      fontWeight: '600',
-      color: theme.primary,
-    },
-    savedBookmarkTextPlaying: {
-      color: theme.onPrimary,
-      fontWeight: '700',
-    },
-    savedPill: {
+    downloadingActionContainer: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 6,
-      paddingHorizontal: 10,
-      borderRadius: 14,
+      gap: 6,
+    },
+    progressPercentageText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: theme.primary,
+    },
+    cancelDownloadButton: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
-    },
-    savedPillPlaying: {
-      backgroundColor: theme.primary,
-      borderColor: theme.primary,
-    },
-    savedPillIcon: {
-      marginRight: 4,
-    },
-    savedPillText: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: theme.textPrimary,
-    },
-    savedPillTextPlaying: {
-      color: theme.onPrimary,
-      fontWeight: '700',
+      justifyContent: 'center',
+      alignItems: 'center',
     },
     // Empty state
     emptyContainer: {

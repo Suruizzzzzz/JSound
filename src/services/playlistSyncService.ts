@@ -510,6 +510,7 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
 /**
  * Import a fetched shared playlist into local SQLite, creating the playlist
  * and inserting all of its tracks so it can be viewed and played locally.
+ * Includes zero-duplicate guard: existing tracks on device are reused instead of duplicated.
  */
 export async function importSharedPlaylist(
   shared: SharedPlaylistData
@@ -521,20 +522,54 @@ export async function importSharedPlaylist(
     shared.share_code
   );
 
-  // 2. Save missing tracks to local SQLite
+  // 2. Query existing SQLite tracks to prevent duplicate tracks and re-downloading
   if (shared.tracks.length > 0) {
-    const tracksToSave: Track[] = shared.tracks.map((t, index) => ({
-      ...t,
-      user_id: 'local_guest',
-      sort_order: index,
-      created_at: new Date().toISOString(),
-    }));
+    const localTracks = await getAllTracks().catch(() => []);
+    const tracksToSave: Track[] = [];
 
-    await saveTracks(tracksToSave);
+    for (let index = 0; index < shared.tracks.length; index++) {
+      const t = shared.tracks[index];
+      const normTitle = (t.title || '').trim().toLowerCase();
+      const normArtist = (t.artist || '').trim().toLowerCase();
 
-    // 3. Add tracks to playlist
-    for (const t of tracksToSave) {
-      await addTrackToPlaylist(localPlaylist.id, t.id);
+      // Check existing SQLite/store tracks by id, youtube_id, or normalized case-insensitive title + artist
+      const existing = localTracks.find((loc) => {
+        if (loc.id === t.id) return true;
+        if (t.youtube_id && loc.youtube_id === t.youtube_id) return true;
+        if (
+          t.id &&
+          (loc.id === `online_youtube_${t.id}` ||
+            `online_youtube_${loc.youtube_id}` === t.id ||
+            loc.youtube_id === t.id.replace(/^online_youtube_/, ''))
+        ) {
+          return true;
+        }
+        const locTitle = (loc.title || '').trim().toLowerCase();
+        const locArtist = (loc.artist || '').trim().toLowerCase();
+        return (
+          locTitle.length > 0 &&
+          locTitle === normTitle &&
+          (normArtist.length === 0 || locArtist === normArtist)
+        );
+      });
+
+      if (existing) {
+        // Reuse existing track ID and local_audio_uri when linking to the imported playlist
+        await addTrackToPlaylist(localPlaylist.id, existing.id);
+      } else {
+        const newTrack: Track = {
+          ...t,
+          user_id: 'local_guest',
+          sort_order: index,
+          created_at: new Date().toISOString(),
+        };
+        tracksToSave.push(newTrack);
+        await addTrackToPlaylist(localPlaylist.id, newTrack.id);
+      }
+    }
+
+    if (tracksToSave.length > 0) {
+      await saveTracks(tracksToSave);
     }
   }
 

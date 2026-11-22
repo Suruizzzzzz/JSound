@@ -57,8 +57,8 @@ export default function TabsLayout() {
           listeners={{
             tabPress: () => {
               const guideState = useGuideStore.getState();
-              if (guideState.isOpen && guideState.currentStep === 3) {
-                guideState.setStep(4);
+              if (guideState.isOpen && guideState.currentStep === 0) {
+                guideState.setStep(1);
               }
             },
           }}

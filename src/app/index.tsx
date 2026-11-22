@@ -1,14 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   Animated,
+  Easing,
   Image,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useThemeStore } from '@/store/themeStore';
@@ -45,6 +46,29 @@ export default function WelcomeScreen() {
   const [bar3] = useState(() => new Animated.Value(0.2));
   const [bar4] = useState(() => new Animated.Value(0.6));
   const [bar5] = useState(() => new Animated.Value(0.3));
+
+  // Wavy dot matrix wave loop
+  const [waveAnim] = useState(() => new Animated.Value(0));
+
+  const WAVY_COLS = 8;
+  const WAVY_ROWS = 12;
+
+  const colAnimations = useMemo(() => {
+    return Array.from({ length: WAVY_COLS }, (_, c) => {
+      const fraction = c / (WAVY_COLS - 1);
+      const mid = 0.2 + fraction * 0.6;
+      return {
+        opacity: waveAnim.interpolate({
+          inputRange: [0, mid, 1],
+          outputRange: [0.10, 0.22, 0.10],
+        }),
+        scaleY: waveAnim.interpolate({
+          inputRange: [0, mid, 1],
+          outputRange: [0.85, 1.25, 0.85],
+        }),
+      };
+    });
+  }, [waveAnim]);
 
   useEffect(() => {
     if (isCheckingWelcome) return;
@@ -107,12 +131,24 @@ export default function WelcomeScreen() {
     l4.start();
     l5.start();
 
+    // 3. Wavy dot matrix background wave
+    const waveLoop = Animated.loop(
+      Animated.timing(waveAnim, {
+        toValue: 1,
+        duration: 3800,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    waveLoop.start();
+
     return () => {
       l1.stop();
       l2.stop();
       l3.stop();
       l4.stop();
       l5.stop();
+      waveLoop.stop();
     };
   }, [
     isCheckingWelcome,
@@ -125,44 +161,50 @@ export default function WelcomeScreen() {
     bar3,
     bar4,
     bar5,
+    waveAnim,
   ]);
 
   // Check if user has already seen onboarding; if so, skip directly to player tabs
-  useEffect(() => {
-    let isMounted = true;
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
 
-    async function checkExistingWelcome() {
-      try {
-        const seen = await getSetting('has_seen_welcome');
-        if (seen === 'true' && isMounted) {
-          router.replace('/(tabs)');
-          return;
+      async function checkExistingWelcome() {
+        try {
+          const seen = await getSetting('has_seen_welcome');
+          const currentUser = useAuthStore.getState().user;
+          const isGuest = useAuthStore.getState().isGuestSession;
+
+          if (seen === 'true' && (currentUser?.is_logged_in || isGuest) && isMounted) {
+            router.replace('/(tabs)');
+            return;
+          }
+        } catch (err) {
+          console.warn('Welcome check error:', err);
+        } finally {
+          if (isMounted) {
+            setIsCheckingWelcome(false);
+          }
+          SplashScreen.hideAsync().catch(() => {});
         }
-      } catch (err) {
-        console.warn('Welcome check error:', err);
-      } finally {
+      }
+
+      checkExistingWelcome();
+
+      // Failsafe timeout to prevent any splash hanging
+      const failsafeTimer = setTimeout(() => {
         if (isMounted) {
           setIsCheckingWelcome(false);
         }
         SplashScreen.hideAsync().catch(() => {});
-      }
-    }
+      }, 2500);
 
-    checkExistingWelcome();
-
-    // Failsafe timeout to prevent any splash hanging
-    const failsafeTimer = setTimeout(() => {
-      if (isMounted) {
-        setIsCheckingWelcome(false);
-      }
-      SplashScreen.hideAsync().catch(() => {});
-    }, 2500);
-
-    return () => {
-      isMounted = false;
-      clearTimeout(failsafeTimer);
-    };
-  }, [router]);
+      return () => {
+        isMounted = false;
+        clearTimeout(failsafeTimer);
+      };
+    }, [router])
+  );
 
   const handleGetStarted = () => {
     router.push('/auth');
@@ -198,6 +240,26 @@ export default function WelcomeScreen() {
           style={styles.watermarkImage}
           resizeMode="contain"
         />
+      </View>
+
+      {/* Minimalist Animated Wavy Dot Matrix Background */}
+      <View style={styles.wavyDotGrid} pointerEvents="none">
+        {colAnimations.map((anim, colIdx) => (
+          <Animated.View
+            key={`col-${colIdx}`}
+            style={[
+              styles.wavyDotCol,
+              {
+                opacity: anim.opacity,
+                transform: [{ scaleY: anim.scaleY }],
+              },
+            ]}
+          >
+            {Array.from({ length: WAVY_ROWS }).map((_, rowIdx) => (
+              <View key={`dot-${rowIdx}`} style={styles.wavyDot} />
+            ))}
+          </Animated.View>
+        ))}
       </View>
 
       {/* Center Hero Area */}

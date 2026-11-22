@@ -28,6 +28,7 @@ export default function RootLayout() {
   const [shouldRedirectToTabs, setShouldRedirectToTabs] = useState(false);
   const setTracks = usePlayerStore((state) => state.setTracks);
   const mode = useThemeStore((state) => state.mode);
+  const theme = useThemeStore((state) => state.theme);
   const initTheme = useThemeStore((state) => state.initTheme);
 
   // Auto-redirect to /(tabs) when authenticated if currently on welcome or auth screens
@@ -118,9 +119,14 @@ export default function RootLayout() {
   }
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
-      <Stack screenOptions={{ headerShown: false }}>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: theme.background },
+        }}
+      >
         <Stack.Screen name="index" />
         <Stack.Screen name="auth" />
         <Stack.Screen name="(tabs)" />

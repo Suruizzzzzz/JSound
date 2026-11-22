@@ -101,7 +101,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
                 name: savedName || GUEST_USER.name,
                 avatar_url: savedAvatar || null,
               },
-              isGuestSession: true,
+              isGuestSession: false,
             });
           }
         });
@@ -507,7 +507,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         name: savedName || GUEST_USER.name,
         avatar_url: savedAvatar || null,
       },
-      isGuestSession: true,
+      isGuestSession: false,
       isSyncing: false,
     });
   },

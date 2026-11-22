@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,6 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { getAllTracks } from '@/repositories/trackRepository';
 import {
@@ -35,8 +34,46 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+function findDemoTargetTrack(results: OnlineTrackResult[]): OnlineTrackResult | undefined {
+  const candidates = results.filter((item) => {
+    const title = (item.title || '').toLowerCase();
+    const artist = (item.artist || '').toLowerCase();
+    const matchesTitle = title.includes('about you');
+    const matchesArtist = artist.includes('1975') || title.includes('1975');
+    return matchesTitle && matchesArtist;
+  });
+
+  if (candidates.length === 0) {
+    return (
+      results.find((item) => (item.title || '').toLowerCase().includes('about you')) || results[0]
+    );
+  }
+
+  // Filter out lyrics uploads if official or original versions exist
+  const nonLyrics = candidates.filter((item) => {
+    const title = (item.title || '').toLowerCase();
+    return !title.includes('lyrics') && !title.includes('lyric');
+  });
+
+  const pool = nonLyrics.length > 0 ? nonLyrics : candidates;
+  const topicOrOfficial = pool.filter((item) => {
+    const artist = (item.artist || '').toLowerCase();
+    const title = (item.title || '').toLowerCase();
+    return (
+      artist.includes('topic') ||
+      artist.includes('the 1975') ||
+      title.includes('official') ||
+      artist === 'the 1975'
+    );
+  });
+
+  if (topicOrOfficial.length > 0) {
+    return topicOrOfficial[0];
+  }
+  return pool[0];
+}
+
 export default function SearchScreen() {
-  const router = useRouter();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -101,15 +138,14 @@ export default function SearchScreen() {
     return onlineResults;
   }, [query, onlineResults]);
 
+  // Guide demo store bindings
+  const demoAction = useGuideStore((state) => state.demoAction);
+  const demoNonce = useGuideStore((state) => state.demoNonce);
+  const lastTriggeredNonceRef = useRef<number>(-1);
+
   // Debounced search effect
   const handleResultsLoaded = (results: OnlineTrackResult[]) => {
     setOnlineResults(results);
-    if (results.length > 0) {
-      const guideState = useGuideStore.getState();
-      if (guideState.isOpen && guideState.currentStep === 4) {
-        guideState.setStep(5);
-      }
-    }
   };
 
   useEffect(() => {
@@ -151,6 +187,30 @@ export default function SearchScreen() {
       clearTimeout(timer);
     };
   }, [query]);
+
+  // Demo Walkthrough Automation: Step 3 autofill search
+  useEffect(() => {
+    if (demoAction === 'autofill_search') {
+      const timer = setTimeout(() => {
+        const demoQuery = 'The 1975 - About You';
+        setQuery(demoQuery);
+        setIsSearching(true);
+        searchOnlineTracks(demoQuery)
+          .then((results) => {
+            setOnlineResults(results);
+          })
+          .catch((err) => {
+            console.warn('Demo search failed:', err);
+          })
+          .finally(() => {
+            setIsSearching(false);
+          });
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [demoAction, demoNonce]);
+
+
 
   // Explicit Search submission
   const handleExplicitSearch = async () => {
@@ -203,15 +263,9 @@ export default function SearchScreen() {
     const savedTrack = findSavedTrack(item);
 
     if (savedTrack) {
-      // Saved locally: ensure immediate autoplay
+      // Saved locally: ensure immediate autoplay / toggle play-pause
       if (currentTrack?.id === savedTrack.id) {
-        if (!isPlaying) {
-          await resumeAudio();
-          usePlayerStore.setState({ isPlaying: true });
-        } else {
-          await usePlayerStore.getState().seekTo(0);
-          await resumeAudio();
-        }
+        await togglePlayPause();
       } else {
         await playTrack(savedTrack, offlineTracks, { type: 'library', name: 'Local Offline Tracks' });
       }
@@ -268,51 +322,62 @@ export default function SearchScreen() {
   };
 
   // Trigger audio download for offline library
-  const handleDownload = async (track: OnlineTrackResult) => {
-    if (downloadingMap[track.id] !== undefined) return; // already in progress
+  const handleDownload = useCallback(
+    async (track: OnlineTrackResult) => {
+      if (downloadingMap[track.id] !== undefined) return; // already in progress
 
-    setDownloadingMap((prev) => ({ ...prev, [track.id]: 0 }));
+      setDownloadingMap((prev) => ({ ...prev, [track.id]: 0 }));
 
-    try {
-      await downloadTrackToOfflineLibrary(track, (pct) => {
-        setDownloadingMap((prev) => ({ ...prev, [track.id]: pct }));
-      });
+      try {
+        await downloadTrackToOfflineLibrary(track, (pct) => {
+          setDownloadingMap((prev) => ({ ...prev, [track.id]: pct }));
+          const guideState = useGuideStore.getState();
+          if (guideState.isOpen && guideState.currentStep === 3) {
+            guideState.setDemoDownloadProgress(Math.min(99, Math.round(pct)));
+          }
+        });
 
-      // Walkthrough Step 6: When download completes, sort library by Last Download,
-      // navigate back to Library, and spotlight the newly downloaded track at Step 7!
-      const guideState = useGuideStore.getState();
-      if (guideState.isOpen && guideState.currentStep === 5) {
-        try {
-          const allTracks = await getAllTracks();
-          const sorted = [...allTracks].sort((a, b) => {
-            const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-            const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-            return timeB - timeA;
-          });
-          usePlayerStore.getState().setTracks(sorted);
-          await setSetting('library_sort', 'last_download');
-        } catch (sortErr) {
-          console.warn('Failed to sort tracks on guide completion:', sortErr);
+        // Walkthrough Step 4: When download completes, update playerStore tracks
+        // and mark demo download done so Step 4's Next button is enabled
+        const guideState = useGuideStore.getState();
+        if (guideState.isOpen && guideState.currentStep === 3) {
+          try {
+            const allTracks = await getAllTracks();
+            const sorted = [...allTracks].sort((a, b) => {
+              const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+              const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+              return timeB - timeA;
+            });
+            usePlayerStore.getState().setTracks(sorted);
+            await setSetting('library_sort', 'last_download');
+          } catch (sortErr) {
+            console.warn('Failed to sort tracks on guide completion:', sortErr);
+          }
+
+          guideState.setDemoDownloadProgress(100);
+          guideState.setDemoDownloadStatus('done');
         }
-
-        guideState.setStep(6);
-        router.navigate('/(tabs)');
+      } catch (error: any) {
+        const guideState = useGuideStore.getState();
+        if (guideState.isOpen && guideState.currentStep === 3) {
+          guideState.setDemoDownloadStatus('error');
+        }
+        setModalConfig({
+          visible: true,
+          title: 'Download Failed',
+          message: error?.message || 'Failed to download the selected audio file. Please try again.',
+          icon: 'cloud-offline-outline',
+        });
+      } finally {
+        setDownloadingMap((prev) => {
+          const next = { ...prev };
+          delete next[track.id];
+          return next;
+        });
       }
-    } catch (error: any) {
-      setModalConfig({
-        visible: true,
-        title: 'Download Failed',
-        message: error?.message || 'Failed to download the selected audio file. Please try again.',
-        icon: 'cloud-offline-outline',
-      });
-    } finally {
-      setDownloadingMap((prev) => {
-        const next = { ...prev };
-        delete next[track.id];
-        return next;
-      });
-    }
-  };
+    },
+    [downloadingMap]
+  );
 
   // Cancel an in-progress track download
   const handleCancelDownload = async (trackId: string) => {
@@ -328,6 +393,52 @@ export default function SearchScreen() {
       });
     }
   };
+
+  // Demo Walkthrough Automation: Step 4 trigger download
+  useEffect(() => {
+    if (demoAction === 'trigger_download' && lastTriggeredNonceRef.current !== demoNonce) {
+      lastTriggeredNonceRef.current = demoNonce;
+      const triggerDemoDownload = async () => {
+        let results = onlineResults;
+        if (results.length === 0) {
+          useGuideStore.getState().setDemoDownloadStatus('searching');
+          setIsSearching(true);
+          try {
+            results = await searchOnlineTracks('The 1975 - About You');
+            setOnlineResults(results);
+          } catch (err) {
+            console.warn('Failed to load demo results for trigger_download:', err);
+            useGuideStore.getState().setDemoDownloadStatus('error');
+            return;
+          } finally {
+            setIsSearching(false);
+          }
+        }
+
+        const target = findDemoTargetTrack(results);
+        if (target) {
+          const alreadySaved = findSavedTrack(target);
+          if (alreadySaved && alreadySaved.local_audio_uri) {
+            // Already downloaded on device (e.g. guide replay from Settings)!
+            useGuideStore.getState().setDemoDownloadProgress(100);
+            useGuideStore.getState().setDemoDownloadStatus('done');
+            return;
+          }
+
+          const isDownloading = downloadingMap[target.id] !== undefined;
+          if (!isDownloading) {
+            useGuideStore.getState().setDemoDownloadStatus('downloading');
+            useGuideStore.getState().setDemoDownloadProgress(0);
+            handleDownload(target);
+          }
+        } else {
+          useGuideStore.getState().setDemoDownloadStatus('error');
+        }
+      };
+
+      triggerDemoDownload();
+    }
+  }, [demoAction, demoNonce, onlineResults, findSavedTrack, downloadingMap, handleDownload]);
 
   // Render individual online track result row
   const renderOnlineTrackItem = ({
@@ -349,133 +460,140 @@ export default function SearchScreen() {
     const isResolving = resolvingTrackId === item.id;
 
     return (
-      <View style={[styles.resultRow, isCurrentTrack && styles.resultRowActive, !isCurrentTrack && savedTrack && styles.resultRowSaved]}>
-        {/* Left / Main area: Thumbnail + Title + Artist (tappable for instant streaming / playing) */}
-        <TouchableOpacity
-          style={styles.resultMainArea}
-          onPress={() => handleMainPress(item)}
-          activeOpacity={0.7}
-        >
-          {/* Rounded Thumbnail / Monogram Icon with resolving spinner overlay */}
-          <View style={styles.thumbnailContainer}>
-            {item.thumbnailUrl ? (
-              <Image
-                source={{ uri: item.thumbnailUrl }}
-                style={styles.thumbnail}
-                resizeMode="cover"
-              />
-            ) : (
-              <View style={styles.thumbnailPlaceholder}>
-                <Ionicons
-                  name={isCurrentPlaying ? 'volume-high' : 'musical-note'}
-                  size={20}
-                  color={isCurrentTrack ? theme.primary : theme.textSecondary}
+      <View
+        style={[
+          styles.resultRow,
+          isCurrentTrack && styles.resultRowActive,
+          !isCurrentTrack && savedTrack && styles.resultRowSaved,
+        ]}
+      >
+        {/* Inner clipped container for background progress and content */}
+        <View style={styles.cardInnerContainer}>
+          {isDownloading && (
+            <View
+              style={[
+                styles.progressFill,
+                {
+                  width: `${Math.min(100, Math.max(0, downloadPct))}%`,
+                  backgroundColor: theme.primary + '22',
+                },
+              ]}
+            />
+          )}
+
+          {/* Left / Main area: Thumbnail + Title + Artist (tappable for instant streaming / playing) */}
+          <TouchableOpacity
+            style={styles.resultMainArea}
+            onPress={() => handleMainPress(item)}
+            activeOpacity={0.7}
+          >
+            {/* Rounded Thumbnail / Monogram Icon with resolving spinner overlay */}
+            <View style={styles.thumbnailContainer}>
+              {item.thumbnailUrl ? (
+                <Image
+                  source={{ uri: item.thumbnailUrl }}
+                  style={styles.thumbnail}
+                  resizeMode="cover"
                 />
-              </View>
-            )}
+              ) : (
+                <View style={styles.thumbnailPlaceholder}>
+                  <Ionicons
+                    name={isCurrentPlaying ? 'volume-high' : 'musical-note'}
+                    size={20}
+                    color={isCurrentTrack ? theme.primary : theme.textSecondary}
+                  />
+                </View>
+              )}
 
-            {/* Subtle loading spinner overlay while resolving online stream */}
-            {isResolving && (
-              <View style={styles.thumbnailOverlay}>
-                <ActivityIndicator size="small" color={theme.primary} />
-              </View>
-            )}
-          </View>
+              {/* Subtle loading spinner overlay while resolving online stream */}
+              {isResolving && (
+                <View style={styles.thumbnailOverlay}>
+                  <ActivityIndicator size="small" color={theme.primary} />
+                </View>
+              )}
+            </View>
 
-          {/* Track Title & Artist Information */}
-          <View style={styles.resultInfo}>
-            <Text
-              style={[styles.resultTitle, isCurrentTrack && styles.resultTitleActive]}
-              numberOfLines={1}
-            >
-              {item.title}
-            </Text>
-            <View style={styles.resultMetaRow}>
-              <View style={styles.sourceBadge}>
-                <Text style={styles.sourceBadgeText}>{item.source}</Text>
-              </View>
-              <Text style={styles.resultArtist} numberOfLines={1}>
-                {item.artist}
+            {/* Track Title & Artist Information */}
+            <View style={styles.resultInfo}>
+              <Text
+                style={[styles.resultTitle, isCurrentTrack && styles.resultTitleActive]}
+                numberOfLines={1}
+              >
+                {item.title}
               </Text>
-              <Text style={styles.resultMetaDot}>•</Text>
-              <View style={styles.durationBadge}>
-                <Text style={styles.durationBadgeText}>{formatDuration(item.duration)}</Text>
+              <View style={styles.resultMetaRow}>
+                <View style={styles.sourceBadge}>
+                  <Text style={styles.sourceBadgeText}>{item.source}</Text>
+                </View>
+                <Text
+                  style={styles.resultArtist}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {item.artist}
+                </Text>
+                <Text style={styles.resultMetaDot}>•</Text>
+                <View style={styles.durationBadge}>
+                  <Text style={styles.durationBadgeText}>{formatDuration(item.duration)}</Text>
+                </View>
               </View>
             </View>
-          </View>
-        </TouchableOpacity>
+          </TouchableOpacity>
 
-        {/* Right-side independent Action Button (Download / Progress / Saved) */}
-        <View style={styles.actionContainer}>
-          {savedTrack ? (
-            // State 3: Minimalist Bookmark "Saved" / "Playing" button
-            <TouchableOpacity
-              style={[styles.savedBookmarkBtn, isCurrentPlaying && styles.savedBookmarkBtnPlaying]}
-              onPress={() => {
-                if (isCurrentTrack) {
-                  togglePlayPause();
-                } else {
-                  handleMainPress(item);
-                }
-              }}
-              activeOpacity={0.8}
-            >
-              <Ionicons
-                name={isCurrentPlaying ? 'pause' : 'bookmark'}
-                size={13}
-                color={isCurrentPlaying ? theme.onPrimary : theme.primary}
-              />
-              <Text
-                style={[
-                  styles.savedBookmarkText,
-                  isCurrentPlaying && styles.savedBookmarkTextPlaying,
-                ]}
-              >
-                {isCurrentPlaying ? 'Playing' : 'Saved'}
-              </Text>
-            </TouchableOpacity>
-          ) : isDownloading ? (
-            // State 2: Circular / percentage progress indicator while downloading with Cancel button
-            <TouchableOpacity
-              style={styles.progressIndicatorContainer}
-              onPress={() => handleCancelDownload(item.id)}
-              activeOpacity={0.7}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityLabel="Cancel download"
-            >
-              <ActivityIndicator size="small" color={theme.primary} />
-              <Text style={styles.progressPercentageText}>{downloadPct}%</Text>
-              <Ionicons
-                name="close-circle"
-                size={16}
-                color={theme.textSecondary}
-                style={styles.progressCancelIcon}
-              />
-            </TouchableOpacity>
-          ) : (
-            // State 1: Independent Download icon button (idle)
-            <View
-              ref={(r) => {
-                if (index === 0) {
-                  registerGuideTarget('first_search_download_btn', r);
-                }
-              }}
-              collapsable={false}
-            >
+          {/* Right-side Action: Saved Play/Pause, Downloading Progress, or Download Button */}
+          <View style={styles.actionContainer}>
+            {savedTrack ? (
               <TouchableOpacity
-                style={styles.downloadButton}
-                onPress={() => handleDownload(item)}
+                style={styles.savedPlayButton}
+                onPress={() => handleMainPress(item)}
                 activeOpacity={0.7}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel={isCurrentPlaying ? "Pause audio" : "Play audio"}
               >
                 <Ionicons
-                  name="cloud-download-outline"
-                  size={18}
-                  color={theme.textPrimary}
+                  name={isCurrentPlaying ? "pause" : "checkmark"}
+                  size={16}
+                  color={theme.primary}
                 />
               </TouchableOpacity>
-            </View>
-          )}
+            ) : isDownloading ? (
+              <View style={styles.downloadingActionContainer}>
+                <Text style={styles.progressPercentageText}>{downloadPct}%</Text>
+                <TouchableOpacity
+                  style={styles.cancelDownloadButton}
+                  onPress={() => handleCancelDownload(item.id)}
+                  activeOpacity={0.7}
+                  hitSlop={8}
+                  accessibilityLabel="Cancel download"
+                >
+                  <Ionicons name="close" size={14} color={theme.textPrimary} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View
+                ref={(r) => {
+                  if (index === 0) {
+                    registerGuideTarget('first_search_download_btn', r);
+                  }
+                }}
+                collapsable={false}
+              >
+                <TouchableOpacity
+                  style={styles.downloadButton}
+                  onPress={() => handleDownload(item)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityLabel="Download track"
+                >
+                  <Ionicons
+                    name="cloud-download-outline"
+                    size={18}
+                    color={theme.textPrimary}
+                  />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
         </View>
       </View>
     );

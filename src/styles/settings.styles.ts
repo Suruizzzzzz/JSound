@@ -119,11 +119,23 @@ export const createStyles = (theme: ThemeColors) =>
       padding: 3,
       borderWidth: 1,
       borderColor: theme.border,
+      position: 'relative',
+    },
+    themeSegmentIndicator: {
+      position: 'absolute',
+      top: 3,
+      bottom: 3,
+      left: 3,
+      borderRadius: 15,
+      backgroundColor: theme.primary,
     },
     themeSegmentButton: {
       paddingVertical: 5,
       paddingHorizontal: 12,
       borderRadius: 15,
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 2,
     },
     themeSegmentActive: {
       backgroundColor: theme.primary,
