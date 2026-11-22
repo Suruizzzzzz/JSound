@@ -80,6 +80,9 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.surfaceElevated,
       borderColor: theme.primary,
     },
+    resultRowSaved: {
+      borderColor: theme.primary + '55',
+    },
     resultMainArea: {
       flex: 1,
       flexDirection: 'row',
@@ -211,6 +214,30 @@ export const createStyles = (theme: ThemeColors) =>
     },
     progressCancelIcon: {
       marginLeft: 2,
+    },
+    savedBookmarkBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 5.5,
+      paddingHorizontal: 9,
+      borderRadius: 9,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.primary + '55',
+      gap: 4.5,
+    },
+    savedBookmarkBtnPlaying: {
+      backgroundColor: theme.primary,
+      borderColor: theme.primary,
+    },
+    savedBookmarkText: {
+      fontSize: 11.5,
+      fontWeight: '600',
+      color: theme.primary,
+    },
+    savedBookmarkTextPlaying: {
+      color: theme.onPrimary,
+      fontWeight: '700',
     },
     savedPill: {
       flexDirection: 'row',

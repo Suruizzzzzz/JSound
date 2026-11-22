@@ -5,19 +5,18 @@ export const createStyles = (theme: ThemeColors) =>
   StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.72)',
-      justifyContent: 'center',
+      backgroundColor: 'rgba(0, 0, 0, 0.45)',
       alignItems: 'center',
-      paddingHorizontal: 24,
+      paddingHorizontal: 20,
     },
     card: {
       width: '100%',
-      maxWidth: 380,
+      maxWidth: 390,
       backgroundColor: theme.surface,
       borderColor: theme.border,
       borderWidth: 1,
       borderRadius: 20,
-      padding: 24,
+      padding: 22,
       shadowColor: '#000000',
       shadowOffset: { width: 0, height: 10 },
       shadowOpacity: 0.35,

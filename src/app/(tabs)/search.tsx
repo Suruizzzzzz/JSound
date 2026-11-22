@@ -349,7 +349,7 @@ export default function SearchScreen() {
     const isResolving = resolvingTrackId === item.id;
 
     return (
-      <View style={[styles.resultRow, isCurrentTrack && styles.resultRowActive]}>
+      <View style={[styles.resultRow, isCurrentTrack && styles.resultRowActive, !isCurrentTrack && savedTrack && styles.resultRowSaved]}>
         {/* Left / Main area: Thumbnail + Title + Artist (tappable for instant streaming / playing) */}
         <TouchableOpacity
           style={styles.resultMainArea}
@@ -408,9 +408,9 @@ export default function SearchScreen() {
         {/* Right-side independent Action Button (Download / Progress / Saved) */}
         <View style={styles.actionContainer}>
           {savedTrack ? (
-            // State 3: Checkmark "Saved" pill
+            // State 3: Minimalist Bookmark "Saved" / "Playing" button
             <TouchableOpacity
-              style={[styles.savedPill, isCurrentPlaying && styles.savedPillPlaying]}
+              style={[styles.savedBookmarkBtn, isCurrentPlaying && styles.savedBookmarkBtnPlaying]}
               onPress={() => {
                 if (isCurrentTrack) {
                   togglePlayPause();
@@ -421,15 +421,14 @@ export default function SearchScreen() {
               activeOpacity={0.8}
             >
               <Ionicons
-                name={isCurrentPlaying ? 'pause' : 'checkmark-circle'}
-                size={14}
+                name={isCurrentPlaying ? 'pause' : 'bookmark'}
+                size={13}
                 color={isCurrentPlaying ? theme.onPrimary : theme.primary}
-                style={styles.savedPillIcon}
               />
               <Text
                 style={[
-                  styles.savedPillText,
-                  isCurrentPlaying && styles.savedPillTextPlaying,
+                  styles.savedBookmarkText,
+                  isCurrentPlaying && styles.savedBookmarkTextPlaying,
                 ]}
               >
                 {isCurrentPlaying ? 'Playing' : 'Saved'}

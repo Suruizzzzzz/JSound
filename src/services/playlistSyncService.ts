@@ -16,7 +16,7 @@ import {
   addTrackToPlaylist,
   getSetting,
 } from '@/lib/database';
-import { downloadTrackToOfflineLibrary, OnlineTrackResult } from '@/services/musicDownloadService';
+import { useSyncProgressStore } from '@/store/syncProgressStore';
 
 export interface SharedPlaylistData {
   id: string;
@@ -251,8 +251,6 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
   }
 }
 
-let isAutoDownloading = false;
-
 /**
  * Checks if the local audio file for a track is missing from device storage.
  */
@@ -269,52 +267,27 @@ export async function isTrackAudioMissing(track: Track): Promise<boolean> {
 
 /**
  * Background sequential Auto-Download Sync:
- * Iterates through synced tracks missing local audio and downloads them sequentially.
+ * Iterates through synced tracks missing local audio and downloads them sequentially
+ * using the live sync progress store.
  */
 export async function runAutoDownloadSync(): Promise<void> {
-  if (isAutoDownloading) return;
   const isEnabled = (await getSetting('auto_download_synced', 'true')) === 'true';
   if (!isEnabled) return;
 
-  isAutoDownloading = true;
   try {
     const allTracks = await getAllTracks();
-    for (const track of allTracks) {
-      // Respect user toggling off mid-sync
-      const currentSetting = await getSetting('auto_download_synced', 'true');
-      if (currentSetting !== 'true') break;
-
-      const isMissing = await isTrackAudioMissing(track);
-      if (isMissing) {
-        const onlineId =
-          track.youtube_id ||
-          (track.id.startsWith('track_yt_')
-            ? track.id.replace(/^track_yt_/, '')
-            : track.id.startsWith('yt_')
-            ? track.id.replace(/^yt_/, '')
-            : null);
-
-        if (onlineId || track.title) {
-          try {
-            const onlineTrack: OnlineTrackResult = {
-              id: onlineId || `query_${encodeURIComponent(track.title)}`,
-              title: track.title,
-              artist: track.artist || 'Unknown Artist',
-              duration: track.duration || 0,
-              thumbnailUrl: track.local_artwork_uri,
-              source: 'youtube',
-            };
-            await downloadTrackToOfflineLibrary(onlineTrack);
-          } catch (downloadErr) {
-            console.warn(`[AutoDownload] Could not download "${track.title}":`, downloadErr);
-          }
-        }
+    const missing: Track[] = [];
+    for (const t of allTracks) {
+      if (await isTrackAudioMissing(t)) {
+        missing.push(t);
       }
     }
+
+    if (missing.length > 0) {
+      await useSyncProgressStore.getState().startSyncDownload(missing);
+    }
   } catch (err) {
-    console.warn('[AutoDownload] Error during auto-download sync:', err);
-  } finally {
-    isAutoDownloading = false;
+    console.warn('[AutoDownload] Error initiating auto-download sync:', err);
   }
 }
 
@@ -369,9 +342,20 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
         sort_order: t.sort_order ?? 0,
       }));
 
-      await supabase
-        .from('user_tracks')
-        .upsert(tracksPayload, { onConflict: 'user_id, id' });
+      try {
+        const payloadWithYt = tracksPayload.map((p, idx) => ({
+          ...p,
+          youtube_id: tracks[idx]?.youtube_id || null,
+        }));
+        const { error: ytErr } = await supabase
+          .from('user_tracks')
+          .upsert(payloadWithYt, { onConflict: 'user_id, id' });
+        if (ytErr) throw ytErr;
+      } catch {
+        await supabase
+          .from('user_tracks')
+          .upsert(tracksPayload, { onConflict: 'user_id, id' });
+      }
     }
 
     // 4. Upsert playlist to Supabase user_playlists with share_code
@@ -464,13 +448,20 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
   let tracks: Track[] = [];
 
   if (trackIds.length > 0) {
-    const { data: remoteTracks, error: tError } = await supabase
+    let remoteTracks: any[] | null = null;
+    const { data, error: tError } = await supabase
       .from('user_tracks')
-      .select('id, title, artist, duration, artwork_url, sort_order')
+      .select('id, title, artist, duration, artwork_url, sort_order, youtube_id')
       .in('id', trackIds);
 
-    if (tError) {
-      console.warn('Could not fetch all track details for shared playlist:', tError);
+    if (tError || !data) {
+      const { data: fallbackTracks } = await supabase
+        .from('user_tracks')
+        .select('id, title, artist, duration, artwork_url, sort_order')
+        .in('id', trackIds);
+      remoteTracks = fallbackTracks || [];
+    } else {
+      remoteTracks = data;
     }
 
     const trackMap = new Map((remoteTracks || []).map((t) => [t.id, t]));
@@ -480,10 +471,17 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
     for (const tid of trackIds) {
       const t = trackMap.get(tid);
       if (t) {
+        const ytId =
+          t.youtube_id ||
+          (t.id?.startsWith('online_youtube_')
+            ? t.id.replace('online_youtube_', '')
+            : t.id?.startsWith('yt_')
+            ? t.id.replace('yt_', '')
+            : null);
         resultTracks.push({
-          id: t.id,
+          id: ytId ? `online_youtube_${ytId}` : t.id,
           user_id: 'local_guest',
-          youtube_id: null,
+          youtube_id: ytId,
           title: t.title,
           artist: t.artist || 'Unknown Artist',
           local_audio_uri: '',

@@ -42,6 +42,8 @@ import {
   importSharedPlaylist,
   SharedPlaylistData,
 } from '@/services/playlistSyncService';
+import { downloadTrackToOfflineLibrary, OnlineTrackResult } from '@/services/musicDownloadService';
+import { useSyncProgressStore } from '@/store/syncProgressStore';
 import TrackItem from '@/components/TrackItem';
 import ConfirmModal from '@/components/ConfirmModal';
 import { Track, Playlist } from '@/types/music';
@@ -65,6 +67,13 @@ function getSortLabel(choice: SortChoice): string {
     case 'custom':
       return 'Custom';
   }
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds || isNaN(seconds)) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
 export default function LibraryScreen() {
@@ -125,6 +134,21 @@ export default function LibraryScreen() {
   const [sharedPreview, setSharedPreview] = useState<SharedPlaylistData | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [isImportingShared, setIsImportingShared] = useState(false);
+  const [isDownloadingShared, setIsDownloadingShared] = useState(false);
+  const [downloadSharedProgress, setDownloadSharedProgress] = useState({
+    current: 0,
+    total: 0,
+    title: '',
+    pct: 0,
+  });
+
+  // Live Cloud Sync Progress
+  const syncDownloading = useSyncProgressStore((state) => state.isDownloading);
+  const syncCurrentIndex = useSyncProgressStore((state) => state.currentIndex);
+  const syncTotalCount = useSyncProgressStore((state) => state.totalCount);
+  const syncCurrentTitle = useSyncProgressStore((state) => state.currentTitle);
+  const syncProgressPct = useSyncProgressStore((state) => state.currentProgress);
+  const cancelSyncDownload = useSyncProgressStore((state) => state.cancelSyncDownload);
 
   // Selected Playlist Cover Action Modal State
   const [showPlaylistCoverActionModal, setShowPlaylistCoverActionModal] = useState(false);
@@ -647,6 +671,79 @@ export default function LibraryScreen() {
       setImportError(e.message || 'Failed to import playlist.');
     } finally {
       setIsImportingShared(false);
+    }
+  };
+
+  const handleDownloadAndImportShared = async () => {
+    if (!sharedPreview) return;
+    setIsDownloadingShared(true);
+    setDownloadSharedProgress({
+      current: 0,
+      total: sharedPreview.tracks.length,
+      title: 'Preparing...',
+      pct: 0,
+    });
+
+    try {
+      const imported = await importSharedPlaylist(sharedPreview);
+      await loadPlaylists();
+
+      for (let i = 0; i < sharedPreview.tracks.length; i++) {
+        const track = sharedPreview.tracks[i];
+        setDownloadSharedProgress({
+          current: i + 1,
+          total: sharedPreview.tracks.length,
+          title: track.title,
+          pct: 0,
+        });
+
+        const onlineId =
+          track.youtube_id ||
+          (track.id.startsWith('online_youtube_')
+            ? track.id.replace('online_youtube_', '')
+            : track.id.startsWith('track_yt_')
+            ? track.id.replace(/^track_yt_/, '')
+            : track.id.startsWith('yt_')
+            ? track.id.replace(/^yt_/, '')
+            : null);
+
+        if (onlineId || track.title) {
+          try {
+            const onlineTrack: OnlineTrackResult = {
+              id: onlineId || `query_${encodeURIComponent(track.title)}`,
+              title: track.title,
+              artist: track.artist || 'Unknown Artist',
+              duration: track.duration || 0,
+              thumbnailUrl: track.local_artwork_uri,
+              source: 'youtube',
+            };
+            await downloadTrackToOfflineLibrary(onlineTrack, (pct) => {
+              setDownloadSharedProgress((prev) => ({
+                ...prev,
+                pct: Math.min(100, Math.max(0, Math.round(pct))),
+              }));
+            });
+          } catch (dlErr) {
+            console.warn(`[ImportShared] Could not download "${track.title}":`, dlErr);
+          }
+        }
+      }
+
+      const allUpdated = await getAllTracks().catch(() => []);
+      if (allUpdated.length > 0) {
+        usePlayerStore.getState().setTracks(allUpdated);
+      }
+
+      setShowImportModal(false);
+      setSharedPreview(null);
+      setImportCodeInput('');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      handleOpenPlaylist(imported);
+    } catch (e: any) {
+      setImportError(e.message || 'Failed to download and import playlist.');
+    } finally {
+      setIsDownloadingShared(false);
     }
   };
 
@@ -1201,6 +1298,46 @@ export default function LibraryScreen() {
         </View>
       )}
 
+      {/* Live Background Sync Download Progress Banner */}
+      {syncDownloading && (
+        <View style={styles.liveDownloadBanner}>
+          <View style={styles.liveDownloadBannerHeader}>
+            <View style={styles.liveDownloadBannerTitleRow}>
+              <ActivityIndicator size="small" color={theme.primary} />
+              <Text style={styles.liveDownloadBannerTitle}>
+                Downloading Cloud Tracks ({syncCurrentIndex}/{syncTotalCount})
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={cancelSyncDownload}
+              style={styles.liveDownloadCancelBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close-circle-outline" size={18} color={theme.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.liveDownloadBannerSub} numberOfLines={1}>
+            {syncCurrentTitle || 'Preparing track...'} • {syncProgressPct}%
+          </Text>
+          <View style={styles.progressBarTrack}>
+            <View
+              style={[
+                styles.progressBarFill,
+                {
+                  width: `${
+                    syncTotalCount > 0
+                      ? Math.round(
+                          ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                        )
+                      : 0
+                  }%`,
+                },
+              ]}
+            />
+          </View>
+        </View>
+      )}
+
       {/* Main Tab Views */}
       {activeTab === 'songs' ? (
         <FlatList
@@ -1694,23 +1831,68 @@ export default function LibraryScreen() {
 
                 {sharedPreview.tracks.length > 0 && (
                   <ScrollView style={styles.sharedTrackList} nestedScrollEnabled>
-                    {sharedPreview.tracks.slice(0, 10).map((t, i) => (
+                    {sharedPreview.tracks.slice(0, 15).map((t, i) => (
                       <View key={t.id || i} style={styles.sharedTrackItem}>
-                        <Ionicons name="musical-note" size={12} color={theme.textSecondary} />
+                        {t.local_artwork_uri ? (
+                          <Image
+                            source={{ uri: t.local_artwork_uri }}
+                            style={styles.sharedTrackThumb}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.sharedTrackThumbPlaceholder}>
+                            <Ionicons name="musical-note" size={13} color={theme.textSecondary} />
+                          </View>
+                        )}
                         <Text style={styles.sharedTrackTitle} numberOfLines={1}>
                           {t.title}
                         </Text>
                         <Text style={styles.sharedTrackArtist} numberOfLines={1}>
                           {t.artist}
                         </Text>
+                        <Text style={styles.sharedTrackDuration}>
+                          {formatDuration(t.duration)}
+                        </Text>
                       </View>
                     ))}
-                    {sharedPreview.tracks.length > 10 && (
+                    {sharedPreview.tracks.length > 15 && (
                       <Text style={[styles.sharedPreviewSubtitle, { textAlign: 'center', marginTop: 4 }]}>
-                        + {sharedPreview.tracks.length - 10} more songs
+                        + {sharedPreview.tracks.length - 15} more songs
                       </Text>
                     )}
                   </ScrollView>
+                )}
+
+                {/* In-Modal Download Progress while Download & Import is active */}
+                {isDownloadingShared && (
+                  <View style={styles.downloadSharedProgressContainer}>
+                    <View style={styles.downloadSharedProgressHeader}>
+                      <Text style={styles.downloadSharedProgressText} numberOfLines={1}>
+                        Downloading {downloadSharedProgress.current}/{downloadSharedProgress.total}: {downloadSharedProgress.title}
+                      </Text>
+                      <Text style={styles.downloadSharedProgressPct}>
+                        {downloadSharedProgress.pct}%
+                      </Text>
+                    </View>
+                    <View style={styles.progressBarTrack}>
+                      <View
+                        style={[
+                          styles.progressBarFill,
+                          {
+                            width: `${
+                              downloadSharedProgress.total > 0
+                                ? Math.round(
+                                    ((downloadSharedProgress.current - 1 + downloadSharedProgress.pct / 100) /
+                                      downloadSharedProgress.total) *
+                                      100
+                                  )
+                                : 0
+                            }%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
                 )}
               </View>
             )}
@@ -1719,24 +1901,42 @@ export default function LibraryScreen() {
               <TouchableOpacity
                 style={styles.modalCancelBtn}
                 onPress={() => setShowImportModal(false)}
+                disabled={isDownloadingShared || isImportingShared}
                 activeOpacity={0.7}
               >
                 <Text style={styles.modalCancelText}>Close</Text>
               </TouchableOpacity>
 
               {sharedPreview && (
-                <TouchableOpacity
-                  style={styles.modalSaveBtn}
-                  onPress={handleConfirmImport}
-                  disabled={isImportingShared}
-                  activeOpacity={0.8}
-                >
-                  {isImportingShared ? (
-                    <ActivityIndicator size="small" color={theme.onPrimary} />
-                  ) : (
-                    <Text style={styles.modalSaveText}>Import to Library</Text>
-                  )}
-                </TouchableOpacity>
+                <View style={styles.modalActionButtonsRow}>
+                  {/* Secondary button: Import Only */}
+                  <TouchableOpacity
+                    style={styles.modalSecondaryActionBtn}
+                    onPress={handleConfirmImport}
+                    disabled={isImportingShared || isDownloadingShared}
+                    activeOpacity={0.8}
+                  >
+                    {isImportingShared ? (
+                      <ActivityIndicator size="small" color={theme.textPrimary} />
+                    ) : (
+                      <Text style={styles.modalSecondaryActionText}>Import Only</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Primary button: Download & Import */}
+                  <TouchableOpacity
+                    style={styles.modalSaveBtn}
+                    onPress={handleDownloadAndImportShared}
+                    disabled={isImportingShared || isDownloadingShared}
+                    activeOpacity={0.8}
+                  >
+                    {isDownloadingShared ? (
+                      <ActivityIndicator size="small" color={theme.onPrimary} />
+                    ) : (
+                      <Text style={styles.modalSaveText}>Download & Import</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
           </View>

@@ -24,6 +24,7 @@ import { useAuthStore } from '@/services/authService';
 import ConfirmModal from '@/components/ConfirmModal';
 import { getSetting, setSetting, getAllPlaylists } from '@/lib/database';
 import { runAutoDownloadSync } from '@/services/playlistSyncService';
+import { useSyncProgressStore } from '@/store/syncProgressStore';
 import { createStyles } from '@/styles/profile.styles';
 
 function formatTotalTime(totalSeconds: number): string {
@@ -60,6 +61,20 @@ export default function ProfileScreen() {
   const [editingName, setEditingName] = useState('');
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(true);
+
+  // Sync Progress & History Store
+  const syncDownloading = useSyncProgressStore((state) => state.isDownloading);
+  const syncCurrentIndex = useSyncProgressStore((state) => state.currentIndex);
+  const syncTotalCount = useSyncProgressStore((state) => state.totalCount);
+  const syncCurrentTitle = useSyncProgressStore((state) => state.currentTitle);
+  const syncProgressPct = useSyncProgressStore((state) => state.currentProgress);
+  const cancelSyncDownload = useSyncProgressStore((state) => state.cancelSyncDownload);
+  const showSyncHistoryModal = useSyncProgressStore((state) => state.showSyncHistoryModal);
+  const syncedTracks = useSyncProgressStore((state) => state.syncedTracks);
+  const isLoadingHistory = useSyncProgressStore((state) => state.isLoadingHistory);
+  const openSyncHistoryModal = useSyncProgressStore((state) => state.openSyncHistoryModal);
+  const closeSyncHistoryModal = useSyncProgressStore((state) => state.closeSyncHistoryModal);
+  const startSyncDownload = useSyncProgressStore((state) => state.startSyncDownload);
 
   // Load playlist count from local database
   useEffect(() => {
@@ -220,6 +235,7 @@ export default function ProfileScreen() {
       await syncPlaylistsToCloud();
       setSyncFeedback('Playlists synchronized with cloud');
       setTimeout(() => setSyncFeedback(null), 3000);
+      openSyncHistoryModal();
     } catch {
       setSyncFeedback('Cloud sync failed');
       setTimeout(() => setSyncFeedback(null), 3000);
@@ -361,6 +377,46 @@ export default function ProfileScreen() {
         {/* Account Sync Card */}
         <Text style={styles.sectionTitle}>Account &amp; Cloud</Text>
 
+        {/* Live Background Sync Download Progress Banner */}
+        {syncDownloading && (
+          <View style={styles.liveDownloadBanner}>
+            <View style={styles.liveDownloadBannerHeader}>
+              <View style={styles.liveDownloadBannerTitleRow}>
+                <ActivityIndicator size="small" color={theme.primary} />
+                <Text style={styles.liveDownloadBannerTitle}>
+                  Downloading Cloud Tracks ({syncCurrentIndex}/{syncTotalCount})
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={cancelSyncDownload}
+                style={styles.liveDownloadCancelBtn}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close-circle-outline" size={18} color={theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.liveDownloadBannerSub} numberOfLines={1}>
+              {syncCurrentTitle || 'Preparing track...'} • {syncProgressPct}%
+            </Text>
+            <View style={styles.progressBarTrack}>
+              <View
+                style={[
+                  styles.progressBarFill,
+                  {
+                    width: `${
+                      syncTotalCount > 0
+                        ? Math.round(
+                            ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                          )
+                        : 0
+                    }%`,
+                  },
+                ]}
+              />
+            </View>
+          </View>
+        )}
+
         {!user.is_logged_in ? (
           <TouchableOpacity
             style={styles.accountCard}
@@ -452,6 +508,28 @@ export default function ProfileScreen() {
                   thumbColor={theme.onPrimary}
                 />
               </View>
+
+              <View style={styles.accountDivider} />
+
+              {/* Cloud Sync History Row */}
+              <TouchableOpacity
+                style={styles.autoDownloadRow}
+                onPress={openSyncHistoryModal}
+                activeOpacity={0.7}
+              >
+                <View style={styles.accountLeft}>
+                  <View style={styles.accountIconWrap}>
+                    <Ionicons name="time-outline" size={18} color={theme.textPrimary} />
+                  </View>
+                  <View style={styles.accountTextGroup}>
+                    <Text style={styles.accountTitle}>Cloud Sync History</Text>
+                    <Text style={styles.accountSubtitle}>
+                      View synced cloud tracks &amp; offline status
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+              </TouchableOpacity>
             </View>
 
             {/* Sign Out Button */}
@@ -567,6 +645,133 @@ export default function ProfileScreen() {
         onConfirm={handleConfirmLogout}
         onCancel={() => setShowLogoutModal(false)}
       />
+
+      {/* Cloud Sync History Modal */}
+      <Modal
+        visible={showSyncHistoryModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={closeSyncHistoryModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.historyModalContent}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Text style={styles.modalTitle}>Cloud Sync History</Text>
+              <TouchableOpacity onPress={closeSyncHistoryModal} activeOpacity={0.7}>
+                <Ionicons name="close" size={20} color={theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Summary Banner */}
+            <View style={styles.historySummaryCard}>
+              <Text style={styles.historySummaryText}>
+                {syncedTracks.length} Songs • {syncedTracks.filter((t) => t.isMissingAudio).length} Cloud Only
+              </Text>
+              {syncedTracks.filter((t) => t.isMissingAudio).length > 0 && !syncDownloading && (
+                <TouchableOpacity
+                  style={styles.historyDownloadAllBtn}
+                  onPress={() => startSyncDownload()}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.historyDownloadAllText}>Download All</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Live progress inside modal if actively downloading */}
+            {syncDownloading && (
+              <View style={[styles.liveDownloadBanner, { marginBottom: 12, padding: 8 }]}>
+                <Text style={styles.liveDownloadBannerTitle}>
+                  Downloading {syncCurrentIndex}/{syncTotalCount}: {syncCurrentTitle} ({syncProgressPct}%)
+                </Text>
+                <View style={[styles.progressBarTrack, { marginTop: 4 }]}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: `${
+                          syncTotalCount > 0
+                            ? Math.round(
+                                ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                              )
+                            : 0
+                        }%`,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* Track List */}
+            {isLoadingHistory ? (
+              <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={theme.primary} />
+              </View>
+            ) : (
+              <ScrollView style={styles.historyList} showsVerticalScrollIndicator={false}>
+                {syncedTracks.map((t) => (
+                  <View key={t.id} style={styles.historyItem}>
+                    {t.local_artwork_uri ? (
+                      <Image
+                        source={{ uri: t.local_artwork_uri }}
+                        style={styles.historyItemThumb}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={styles.historyItemThumbPlaceholder}>
+                        <Ionicons name="musical-note" size={14} color={theme.textSecondary} />
+                      </View>
+                    )}
+                    <View style={styles.historyItemInfo}>
+                      <Text style={styles.historyItemTitle} numberOfLines={1}>
+                        {t.title}
+                      </Text>
+                      <Text style={styles.historyItemArtist} numberOfLines={1}>
+                        {t.artist || 'Unknown Artist'}
+                      </Text>
+                    </View>
+                    <View
+                      style={
+                        t.isMissingAudio
+                          ? styles.historyPillCloud
+                          : styles.historyPillDownloaded
+                      }
+                    >
+                      <Text
+                        style={
+                          t.isMissingAudio
+                            ? styles.historyPillTextCloud
+                            : styles.historyPillText
+                        }
+                      >
+                        {t.isMissingAudio ? 'Cloud Only' : 'Downloaded'}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+                {syncedTracks.length === 0 && (
+                  <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                    <Text style={{ fontSize: 13, color: theme.textSecondary }}>
+                      No tracks synchronized yet.
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+            )}
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={closeSyncHistoryModal}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
