@@ -16,7 +16,7 @@ interface ThemeState {
   setThemeMode: (mode: ThemeMode) => void;
 }
 
-const defaultThemeMode: ThemeMode = 'light';
+const defaultThemeMode: ThemeMode = 'dark';
 
 export const useThemeStore = create<ThemeState>((set, get) => ({
   mode: defaultThemeMode,
@@ -37,7 +37,11 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     } catch (e) {
       console.warn('Failed to load saved theme mode:', e);
     }
-    set({ isLoaded: true });
+    set({
+      mode: defaultThemeMode,
+      theme: Themes[defaultThemeMode],
+      isLoaded: true,
+    });
   },
 
   toggleTheme: () => {
