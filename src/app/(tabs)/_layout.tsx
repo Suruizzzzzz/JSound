@@ -1,7 +1,8 @@
 import React, { useMemo, useEffect } from 'react';
-import { View, TouchableOpacity } from 'react-native';
+import { View, TouchableOpacity, Platform } from 'react-native';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeStore } from '@/store/themeStore';
 import { useGuideStore, registerGuideTarget } from '@/store/guideStore';
 import MiniPlayer from '@/components/MiniPlayer';
@@ -12,6 +13,9 @@ import { createStyles } from '@/styles/_layout.styles';
 export default function TabsLayout() {
   const theme = useThemeStore((state) => state.theme);
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'ios' ? Math.max(insets.bottom, 28) : Math.max(insets.bottom, 10);
+  const tabBarHeight = (Platform.OS === 'ios' ? 60 : 54) + bottomInset;
 
   // Check and trigger the one-time interactive newcomer guide for first-time visitors
   useEffect(() => {
@@ -23,7 +27,13 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarStyle: styles.tabBar,
+          tabBarStyle: [
+            styles.tabBar,
+            {
+              height: tabBarHeight,
+              paddingBottom: bottomInset,
+            },
+          ],
           tabBarActiveTintColor: theme.primary,
           tabBarInactiveTintColor: theme.textSecondary,
           tabBarLabelStyle: styles.tabBarLabel,

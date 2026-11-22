@@ -13,7 +13,8 @@ import {
   Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useNavigation } from 'expo-router';
+import { CommonActions } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -37,6 +38,7 @@ function formatTotalTime(totalSeconds: number): string {
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -229,7 +231,16 @@ export default function ProfileScreen() {
     try {
       await signOut();
       await setSetting('has_seen_welcome', 'false');
-      router.replace('/');
+      let rootNav: any = navigation;
+      while (rootNav.getParent()) {
+        rootNav = rootNav.getParent();
+      }
+      rootNav.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: 'index' }],
+        })
+      );
     } catch (err) {
       console.warn('Error during sign out:', err);
     }

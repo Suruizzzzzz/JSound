@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { getSetting, setSetting } from '@/lib/database';
 
-export const TOTAL_GUIDE_STEPS = 7;
+export const TOTAL_GUIDE_STEPS = 4;
 
 export type GuideTargetKey =
   | 'add_music_button'
@@ -19,7 +19,7 @@ export interface TargetRect {
   borderRadius?: number;
 }
 
-// In-memory registry of measured native element refs
+// In-memory registry of measured native element refs (kept for screen compatibility)
 const targetRefs: Partial<Record<GuideTargetKey, any>> = {};
 
 export function registerGuideTarget(key: GuideTargetKey, ref: any) {
@@ -34,25 +34,8 @@ export function unregisterGuideTarget(key: GuideTargetKey) {
   delete targetRefs[key];
 }
 
-export function measureGuideTarget(key: GuideTargetKey): Promise<TargetRect | null> {
-  return new Promise((resolve) => {
-    const ref = targetRefs[key];
-    if (ref && typeof ref.measureInWindow === 'function') {
-      try {
-        ref.measureInWindow((x: number, y: number, width: number, height: number) => {
-          if (width > 0 && height > 0) {
-            resolve({ x, y, width, height });
-          } else {
-            resolve(null);
-          }
-        });
-      } catch {
-        resolve(null);
-      }
-    } else {
-      resolve(null);
-    }
-  });
+export function measureGuideTarget(_key: GuideTargetKey): Promise<TargetRect | null> {
+  return Promise.resolve(null);
 }
 
 interface GuideState {
@@ -99,6 +82,7 @@ export const useGuideStore = create<GuideState>((set, get) => ({
     set({ isOpen: false });
     try {
       await setSetting('has_seen_onboarding_guide', 'true');
+      await setSetting('has_completed_newcomer_guide', 'true');
     } catch (err) {
       console.warn('Failed to persist onboarding guide status:', err);
     }
@@ -128,8 +112,9 @@ export const useGuideStore = create<GuideState>((set, get) => ({
 
   checkAndTriggerGuide: async () => {
     try {
-      const seen = await getSetting('has_seen_onboarding_guide');
-      if (seen !== 'true') {
+      const seenOnboarding = await getSetting('has_seen_onboarding_guide');
+      const seenNewcomer = await getSetting('has_completed_newcomer_guide');
+      if (seenOnboarding !== 'true' && seenNewcomer !== 'true') {
         set({ isOpen: true, currentStep: 0, noTracksFound: false });
       }
     } catch (err) {

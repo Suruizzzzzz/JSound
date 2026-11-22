@@ -4,8 +4,10 @@ import {
   Text,
   TouchableOpacity,
   Image,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import { createStyles } from './MiniPlayer.styles';
@@ -19,6 +21,10 @@ export default function MiniPlayer() {
   const playNext = usePlayerStore((state) => state.playNext);
   const setModalOpen = usePlayerStore((state) => state.setModalOpen);
 
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'ios' ? Math.max(insets.bottom, 28) : Math.max(insets.bottom, 10);
+  const tabBarHeight = (Platform.OS === 'ios' ? 60 : 54) + bottomInset;
+
   const theme = useThemeStore((state) => state.theme);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
@@ -29,7 +35,7 @@ export default function MiniPlayer() {
   const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { bottom: tabBarHeight }]}>
       <TouchableOpacity
         style={styles.innerContent}
         activeOpacity={0.9}

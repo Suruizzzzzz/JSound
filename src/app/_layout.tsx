@@ -45,20 +45,24 @@ export default function RootLayout() {
   }, [pathname, router]);
 
   useEffect(() => {
+    let isMounted = true;
+
     async function prepare() {
       try {
         // Initialize SQLite Database schema
-        await initDatabase();
+        await initDatabase().catch((e) => console.warn('initDatabase error:', e));
 
         // Load saved theme preference
-        await initTheme();
+        await initTheme().catch((e) => console.warn('initTheme error:', e));
 
         // Load saved local user profile
-        await useAuthStore.getState().initProfile();
+        await useAuthStore.getState().initProfile().catch((e) => console.warn('initProfile error:', e));
 
         // Preload stored tracks into Zustand store
-        const tracks = await getAllTracks();
-        setTracks(tracks);
+        const tracks = await getAllTracks().catch(() => []);
+        if (isMounted) {
+          setTracks(tracks);
+        }
 
         // Request notification permission on Android 13+ for lock screen media notification controls
         const isExpoGo =
@@ -73,19 +77,34 @@ export default function RootLayout() {
         }
 
         // Check if user has already seen onboarding
-        const seenWelcome = await getSetting('has_seen_welcome');
-        if (seenWelcome === 'true') {
+        const seenWelcome = await getSetting('has_seen_welcome').catch(() => null);
+        if (isMounted && seenWelcome === 'true') {
           setShouldRedirectToTabs(true);
         }
       } catch (e) {
         console.warn('Initialization error:', e);
       } finally {
-        setIsReady(true);
+        if (isMounted) {
+          setIsReady(true);
+        }
         await SplashScreen.hideAsync().catch(() => {});
       }
     }
 
     prepare();
+
+    // Guaranteed failsafe: dismiss splash screen within 2.5s even if startup async hangs
+    const failsafeTimer = setTimeout(() => {
+      if (isMounted) {
+        setIsReady(true);
+      }
+      SplashScreen.hideAsync().catch(() => {});
+    }, 2500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(failsafeTimer);
+    };
   }, [setTracks, initTheme]);
 
   useEffect(() => {

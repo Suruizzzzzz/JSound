@@ -5,10 +5,12 @@ import {
   TouchableOpacity,
   Animated,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/services/authService';
 import { setSetting, getSetting } from '@/lib/database';
@@ -31,6 +33,7 @@ export default function WelcomeScreen() {
   );
 
   // Entrance animation values
+  const [isCheckingWelcome, setIsCheckingWelcome] = useState(true);
   const [textTranslate] = useState(() => new Animated.Value(18));
   const [textOpacity] = useState(() => new Animated.Value(0));
   const [actionsTranslate] = useState(() => new Animated.Value(24));
@@ -44,6 +47,8 @@ export default function WelcomeScreen() {
   const [bar5] = useState(() => new Animated.Value(0.3));
 
   useEffect(() => {
+    if (isCheckingWelcome) return;
+
     // 1. Entrance sequence
     Animated.sequence([
       Animated.parallel([
@@ -110,6 +115,7 @@ export default function WelcomeScreen() {
       l5.stop();
     };
   }, [
+    isCheckingWelcome,
     textTranslate,
     textOpacity,
     actionsTranslate,
@@ -123,17 +129,39 @@ export default function WelcomeScreen() {
 
   // Check if user has already seen onboarding; if so, skip directly to player tabs
   useEffect(() => {
+    let isMounted = true;
+
     async function checkExistingWelcome() {
       try {
         const seen = await getSetting('has_seen_welcome');
-        if (seen === 'true') {
+        if (seen === 'true' && isMounted) {
           router.replace('/(tabs)');
+          return;
         }
       } catch (err) {
         console.warn('Welcome check error:', err);
+      } finally {
+        if (isMounted) {
+          setIsCheckingWelcome(false);
+        }
+        SplashScreen.hideAsync().catch(() => {});
       }
     }
+
     checkExistingWelcome();
+
+    // Failsafe timeout to prevent any splash hanging
+    const failsafeTimer = setTimeout(() => {
+      if (isMounted) {
+        setIsCheckingWelcome(false);
+      }
+      SplashScreen.hideAsync().catch(() => {});
+    }, 2500);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(failsafeTimer);
+    };
   }, [router]);
 
   const handleGetStarted = () => {
@@ -149,6 +177,15 @@ export default function WelcomeScreen() {
     }
     router.replace('/(tabs)');
   };
+
+  if (isCheckingWelcome) {
+    return (
+      <SafeAreaView style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
+        <ActivityIndicator size="small" color={theme.primary} />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
