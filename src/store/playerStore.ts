@@ -11,9 +11,9 @@ import {
   getPlaybackPosition,
 } from '@/services/audioService';
 import {
-  searchOnlineTracks,
+  getRelatedOnlineTracks,
+  extractVideoId,
   resolveOnlineStreamUrl,
-  OnlineTrackResult,
 } from '@/services/musicDownloadService';
 
 export interface PlaybackContext {
@@ -158,7 +158,7 @@ export function preWarmTrackStreams(tracks: Track[]): void {
 
 let sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
 let progressIntervalHandle: ReturnType<typeof setInterval> | null = null;
-let isFetchingRadio = false;
+let radioFetchPromise: Promise<void> | null = null;
 let playbackSessionId = 0;
 let lastSeekTimestamp = 0;
 
@@ -496,29 +496,40 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const { queue, currentTrack, isShuffle, playbackContext, playTrack } = get();
     if (queue.length === 0) return;
 
-    const currentIndex = queue.findIndex((t) => t.id === currentTrack?.id);
+    let currentQueue = queue;
+    let currentIndex = currentQueue.findIndex((t) => t.id === currentTrack?.id);
+
+    // If in search-radio mode and at the end of the queue, await in-flight or trigger radio fetch first
+    if (
+      playbackContext?.type === 'search-radio' &&
+      (currentIndex === -1 || currentIndex >= currentQueue.length - 1)
+    ) {
+      await get().fetchRelatedRadioTracks(currentTrack);
+      currentQueue = get().queue;
+      currentIndex = currentQueue.findIndex((t) => t.id === currentTrack?.id);
+    }
 
     let nextIndex: number;
-    if (isShuffle && queue.length > 1) {
+    if (isShuffle && currentQueue.length > 1) {
       // Pick random index different from current
       do {
-        nextIndex = Math.floor(Math.random() * queue.length);
-      } while (nextIndex === currentIndex && queue.length > 1);
+        nextIndex = Math.floor(Math.random() * currentQueue.length);
+      } while (nextIndex === currentIndex && currentQueue.length > 1);
     } else {
       // Loop infinitely by default: wrapping seamlessly to queue[0] on the last track
-      nextIndex = currentIndex >= 0 ? (currentIndex + 1) % queue.length : 0;
+      nextIndex = currentIndex >= 0 ? (currentIndex + 1) % currentQueue.length : 0;
     }
 
     // Auto-fetch next batch in 'search-radio' mode when remaining tracks <= 2
     if (playbackContext?.type === 'search-radio') {
-      const remainingTracks = queue.length - 1 - nextIndex;
+      const remainingTracks = currentQueue.length - 1 - nextIndex;
       if (remainingTracks <= 2) {
-        const seed = queue[nextIndex] || currentTrack;
+        const seed = currentQueue[nextIndex] || currentTrack;
         get().fetchRelatedRadioTracks(seed);
       }
     }
 
-    await playTrack(queue[nextIndex], queue);
+    await playTrack(currentQueue[nextIndex], currentQueue);
   },
 
   playPrevious: async () => {
@@ -540,78 +551,86 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   fetchRelatedRadioTracks: async (seedTrack?: Track | null) => {
     const state = get();
     const track = seedTrack || state.currentTrack;
-    if (!track || isFetchingRadio) return;
+    if (!track) return;
 
-    isFetchingRadio = true;
-    try {
-      const artist = (track.artist || '').trim();
-      const cleanTitle = (track.title || '')
-        .replace(/\(Official.*?\)/gi, '')
-        .replace(/\[Official.*?\]/gi, '')
-        .replace(/ft\..*$/gi, '')
-        .replace(/feat\..*$/gi, '')
-        .replace(/\(.*?\)/g, '')
-        .replace(/\[.*?\]/g, '')
-        .trim();
-
-      const queries = [
-        artist ? `${artist} songs` : cleanTitle,
-        artist && cleanTitle ? `${artist} ${cleanTitle}` : null,
-      ].filter(Boolean) as string[];
-
-      let results: OnlineTrackResult[] = [];
-      for (const q of queries) {
-        try {
-          const batch = await searchOnlineTracks(q);
-          if (batch.length > 0) {
-            results = batch;
-            break;
-          }
-        } catch {
-          // ignore & try fallback query
-        }
-      }
-
-      if (results.length === 0) return;
-
-      const currentQueue = get().queue;
-      const existingVideoIds = new Set(
-        currentQueue
-          .map((t) =>
-            t.youtube_id ||
-            t.id.replace(/^online_youtube_/, '').replace(/^stream_youtube_/, '')
-          )
-          .filter(Boolean)
-      );
-
-      const relatedTracks: Track[] = results
-        .filter((r) => r.id && !existingVideoIds.has(r.id))
-        .slice(0, 15)
-        .map((r) => ({
-          id: `online_youtube_${r.id}`,
-          user_id: 'local_guest',
-          youtube_id: r.id,
-          title: r.title,
-          artist: r.artist || artist || 'Unknown Artist',
-          local_audio_uri: '',
-          local_artwork_uri: r.thumbnailUrl || null,
-          duration: r.duration || 0,
-          source: 'youtube',
-          is_synced: 0,
-          created_at: new Date().toISOString(),
-          is_streaming: true,
-        }));
-
-      if (relatedTracks.length > 0) {
-        set((s) => ({
-          queue: [...s.queue, ...relatedTracks],
-        }));
-      }
-    } catch (err) {
-      console.warn('[PlayerStore] Error fetching related radio tracks:', err);
-    } finally {
-      isFetchingRadio = false;
+    if (radioFetchPromise) {
+      return radioFetchPromise;
     }
+
+    radioFetchPromise = (async () => {
+      try {
+        const videoId =
+          extractYoutubeId(track) ||
+          extractVideoId(track.youtube_id || track.id || track.local_audio_uri) ||
+          '';
+
+        const artist = (track.artist || '').trim();
+        const cleanTitle = (track.title || '')
+          .replace(/\(Official.*?\)/gi, '')
+          .replace(/\[Official.*?\]/gi, '')
+          .replace(/ft\..*$/gi, '')
+          .replace(/feat\..*$/gi, '')
+          .replace(/\(.*?\)/g, '')
+          .replace(/\[.*?\]/g, '')
+          .trim();
+
+        const fallbackQuery =
+          artist && cleanTitle
+            ? `${artist} ${cleanTitle}`
+            : artist
+            ? `${artist} songs`
+            : cleanTitle;
+
+        const results = await getRelatedOnlineTracks(videoId, fallbackQuery);
+        if (results.length === 0) return;
+
+        const currentQueue = get().queue;
+        const existingVideoIds = new Set(
+          currentQueue
+            .map((t) =>
+              t.youtube_id ||
+              t.id.replace(/^online_youtube_/, '').replace(/^stream_youtube_/, '')
+            )
+            .filter(Boolean)
+        );
+
+        const relatedTracks: Track[] = results
+          .filter((r) => r.id && !existingVideoIds.has(r.id))
+          .map((r) => ({
+            id: `online_youtube_${r.id}`,
+            user_id: 'local_guest',
+            youtube_id: r.id,
+            title: r.title,
+            artist: r.artist || artist || 'Unknown Artist',
+            local_audio_uri: '',
+            local_artwork_uri: r.thumbnailUrl || null,
+            duration: r.duration || 0,
+            source: 'youtube',
+            is_synced: 0,
+            created_at: new Date().toISOString(),
+            is_streaming: true,
+            is_playlist_only: 1,
+          }));
+
+        if (relatedTracks.length > 0) {
+          const updatedQueue = [...get().queue, ...relatedTracks];
+          set({ queue: updatedQueue });
+
+          // Pre-warm stream URL for queue[currentIndex + 1] if available
+          const cTrack = get().currentTrack;
+          const cIndex = updatedQueue.findIndex((t) => t.id === cTrack?.id);
+          if (cIndex >= 0 && cIndex < updatedQueue.length - 1) {
+            preWarmTrackStreams([updatedQueue[cIndex + 1]]);
+          }
+        }
+      } catch (err) {
+        console.warn('[PlayerStore] Error fetching related radio tracks:', err);
+      } finally {
+        radioFetchPromise = null;
+      }
+    })();
+
+    return radioFetchPromise;
   },
 
   seekTo: async (seconds: number) => {

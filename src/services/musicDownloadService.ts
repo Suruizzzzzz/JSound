@@ -376,6 +376,103 @@ export async function searchOnlineTracks(query: string): Promise<OnlineTrackResu
 }
 
 /**
+ * Fetches related tracks for seamless Search Radio / Autoplay Up Next.
+ * Prioritizes YouTube's native watch_next_feed recommendations,
+ * seamlessly falling back to searchOnlineTracks if fewer than 5 tracks are returned.
+ */
+export async function getRelatedOnlineTracks(
+  videoId: string,
+  fallbackQuery: string
+): Promise<OnlineTrackResult[]> {
+  const cleanVideoId = extractVideoId(videoId);
+  const seenIds = new Set<string>();
+  if (cleanVideoId) {
+    seenIds.add(cleanVideoId);
+  }
+  const results: OnlineTrackResult[] = [];
+
+  if (cleanVideoId) {
+    try {
+      const innertube = await getInnertube();
+      const info = await innertube.getInfo(cleanVideoId);
+      const feed = (info as any)?.watch_next_feed;
+      const rawItems: any[] = Array.isArray(feed)
+        ? feed
+        : Array.isArray((feed as any)?.items)
+        ? (feed as any).items
+        : feed && typeof feed[Symbol.iterator] === 'function'
+        ? Array.from(feed)
+        : [];
+
+      for (const v of rawItems) {
+        const id = extractVideoId(v.video_id || v.id);
+        if (!id || seenIds.has(id)) continue;
+
+        const title =
+          v.title?.text ||
+          v.title?.toString?.() ||
+          (typeof v.title === 'string' ? v.title : '');
+        if (!title || title === '[object Object]') continue;
+
+        const artist =
+          v.author?.name ||
+          v.author?.text ||
+          v.author?.toString?.() ||
+          v.short_byline?.text ||
+          v.short_byline_text?.text ||
+          'Unknown Artist';
+
+        const duration =
+          typeof v.duration?.seconds === 'number'
+            ? v.duration.seconds
+            : parseDurationToSeconds(v.duration?.text || v.length_text?.text);
+
+        const thumbnailUrl =
+          v.best_thumbnail?.url ||
+          v.thumbnails?.[0]?.url ||
+          (Array.isArray(v.thumbnail?.thumbnails) && v.thumbnail.thumbnails[0]?.url) ||
+          null;
+
+        seenIds.add(id);
+        results.push({
+          id,
+          title,
+          artist,
+          duration,
+          thumbnailUrl,
+          source: 'youtube',
+        });
+
+        if (results.length >= 15) break;
+      }
+    } catch (err) {
+      console.warn('[musicDownloadService] Failed to fetch watch_next_feed:', err);
+    }
+  }
+
+  // If watch_next_feed returns fewer than 5 tracks or throws, seamlessly fall back to searchOnlineTracks
+  if (results.length < 5 && fallbackQuery?.trim()) {
+    try {
+      const fallbackResults = await searchOnlineTracks(fallbackQuery.trim());
+      for (const item of fallbackResults) {
+        const id = extractVideoId(item.id);
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        results.push({
+          ...item,
+          id,
+        });
+        if (results.length >= 15) break;
+      }
+    } catch (err) {
+      console.warn('[musicDownloadService] Fallback search for related tracks failed:', err);
+    }
+  }
+
+  return results.slice(0, 15);
+}
+
+/**
  * Extracts and resolves a direct, IP-matched audio stream URL and required headers for an online track.
  * Strictly prioritizes audio/mp4 (.m4a / AAC) to prevent Android expo-audio from stalling at 0:00.
  */
