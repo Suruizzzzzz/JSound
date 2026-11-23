@@ -35,6 +35,7 @@ export default function NowPlayingModal() {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const playbackContext = usePlayerStore((state) => state.playbackContext);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const isBuffering = usePlayerStore((state) => state.isBuffering);
   const position = usePlayerStore((state) => state.position);
   const duration = usePlayerStore((state) => state.duration);
   const isShuffle = usePlayerStore((state) => state.isShuffle);
@@ -189,7 +190,12 @@ export default function NowPlayingModal() {
   const maxSliderValue = duration > 0 ? duration : 1;
 
   const isPlaylist = playbackContext?.type === 'playlist' && Boolean(playbackContext.name);
-  const headerSuperText = isPlaylist ? 'PLAYING FROM PLAYLIST' : 'PLAYING FROM YOUR LIBRARY';
+  const isRadio = playbackContext?.type === 'search-radio';
+  const headerSuperText = isRadio
+    ? 'PLAYING FROM ARTIST RADIO'
+    : isPlaylist
+    ? 'PLAYING FROM PLAYLIST'
+    : 'PLAYING FROM YOUR LIBRARY';
   const headerSubText = isPlaylist
     ? playbackContext.name!
     : (playbackContext?.name || 'Local Offline Tracks');
@@ -255,7 +261,12 @@ export default function NowPlayingModal() {
                 style={styles.artworkImage}
               />
             ) : (
-              <DotMatrixVisualizer isPlaying={isPlaying} position={effectivePosition} />
+              <DotMatrixVisualizer
+                isPlaying={isPlaying}
+                isBuffering={isBuffering}
+                isVisible={isModalOpen}
+                position={effectivePosition}
+              />
             )}
           </TouchableOpacity>
         </View>
@@ -282,13 +293,20 @@ export default function NowPlayingModal() {
             minimumTrackTintColor={theme.primary}
             maximumTrackTintColor={theme.border}
             thumbTintColor={theme.primary}
+            onSlidingStart={(val) => {
+              setIsSeeking(true);
+              setDragPosition(val);
+            }}
             onValueChange={(val) => {
               setIsSeeking(true);
               setDragPosition(val);
             }}
             onSlidingComplete={async (val) => {
+              setDragPosition(val);
               await seekTo(val);
-              setIsSeeking(false);
+              setTimeout(() => {
+                setIsSeeking(false);
+              }, 150);
             }}
           />
 

@@ -6,84 +6,94 @@ import {
   Easing,
 } from 'react-native';
 import { useThemeStore } from '@/store/themeStore';
+import { usePlayerStore } from '@/store/playerStore';
 import { createStyles } from '@/styles/DotMatrixVisualizer.styles';
 
-const NUM_COLUMNS = 30;
-const UPPER_DOT_COUNT = 14;
-const LOWER_DOT_COUNT = 8;
+const NUM_BARS = 24;
+const RESTING_SCALE = 0.1; // Minimal resting pill height (~5px)
 
-// Precomputed opacities: upper fades from 1.0 down to 0.20, reflection from 0.35 down to 0.05
-const UPPER_OPACITIES = Array.from({ length: UPPER_DOT_COUNT }, (_, d) =>
-  Number((1.0 - (d / 13) * 0.8).toFixed(3))
-);
-
-const LOWER_OPACITIES = Array.from({ length: LOWER_DOT_COUNT }, (_, r) =>
-  Number((0.35 - (r / 7) * 0.30).toFixed(3))
-);
-
-function getRestingHeight(index: number): number {
-  // Minimal 1–2 dot resting line across the baseline
-  const normalized = index / (NUM_COLUMNS - 1);
-  return 0.09 + 0.03 * Math.sin(normalized * Math.PI);
+interface BarConfig {
+  peak1: number;
+  peak2: number;
+  low: number;
+  dur1: number;
+  dur2: number;
 }
 
-function getColumnPeak(index: number, position: number): { peak1: number; peak2: number; low: number; dur1: number; dur2: number } {
-  // Modulate phase with position to create organic, shifting spectral waves
-  const phase = (position * 3.2 + (index / NUM_COLUMNS) * Math.PI * 3) % (2 * Math.PI);
+function getBarConfig(index: number, position: number): BarConfig {
+  const phase = (position * 2.8 + (index / NUM_BARS) * Math.PI * 2) % (2 * Math.PI);
   const posMod = Math.sin(phase);
 
   if (index < 6) {
-    // Bass / Kick columns: deep punchy 120–135 BPM rhythm, reaching 12–14 dots (0.86 – 0.98)
-    const peak = Math.min(0.98, Math.max(0.82, 0.90 + 0.08 * posMod));
+    // Bass / Kick columns: punchy rhythmic pulse (0.82 - 0.98)
+    const peak = Math.min(0.98, Math.max(0.78, 0.88 + 0.10 * posMod));
     return {
       peak1: peak,
-      peak2: Math.max(0.68, peak * 0.8),
+      peak2: Math.max(0.60, peak * 0.78),
       low: 0.18 + (index % 3) * 0.04,
-      dur1: 95 + (index % 3) * 15,
+      dur1: 100 + (index % 3) * 15,
       dur2: 150 + (index % 4) * 20,
     };
-  } else if (index < 15) {
-    // Low-mids / Snare & Vocal body: rolling waves, reaching 11–13 dots (0.80 – 0.95)
-    const peak = Math.min(0.96, Math.max(0.78, 0.86 + 0.10 * posMod));
+  } else if (index < 14) {
+    // Low-mids / vocal body: rolling fluid waves (0.72 - 0.94)
+    const peak = Math.min(0.94, Math.max(0.70, 0.82 + 0.12 * posMod));
     return {
       peak1: peak,
-      peak2: Math.max(0.62, peak * 0.76),
+      peak2: Math.max(0.55, peak * 0.74),
       low: 0.16 + (index % 4) * 0.03,
-      dur1: 105 + (index % 4) * 15,
+      dur1: 110 + (index % 4) * 15,
       dur2: 140 + (index % 5) * 15,
     };
-  } else if (index < 23) {
-    // High-mids / Lead instruments: snappy ripples, reaching 10–13 dots (0.75 – 0.94)
-    const peak = Math.min(0.94, Math.max(0.74, 0.84 + 0.10 * Math.cos(phase)));
+  } else if (index < 20) {
+    // High-mids / Lead instruments: dynamic ripples (0.65 - 0.88)
+    const peak = Math.min(0.88, Math.max(0.62, 0.76 + 0.12 * Math.cos(phase)));
     return {
       peak1: peak,
-      peak2: Math.max(0.58, peak * 0.72),
+      peak2: Math.max(0.50, peak * 0.70),
       low: 0.14 + (index % 3) * 0.03,
-      dur1: 85 + (index % 4) * 12,
-      dur2: 120 + (index % 4) * 15,
+      dur1: 90 + (index % 4) * 12,
+      dur2: 125 + (index % 4) * 15,
     };
   } else {
-    // Treble / Hi-hats: rapid 16th-note ticks, reaching 9–13 dots (0.70 – 0.92)
-    const peak = Math.min(0.92, Math.max(0.68, 0.80 + 0.12 * posMod));
+    // Treble / Hi-hats: rapid crisp ticks (0.50 - 0.78)
+    const peak = Math.min(0.78, Math.max(0.48, 0.65 + 0.13 * posMod));
     return {
       peak1: peak,
-      peak2: Math.max(0.52, peak * 0.68),
+      peak2: Math.max(0.40, peak * 0.65),
       low: 0.12 + (index % 3) * 0.03,
-      dur1: 70 + (index % 4) * 10,
-      dur2: 95 + (index % 3) * 12,
+      dur1: 75 + (index % 4) * 10,
+      dur2: 105 + (index % 3) * 12,
     };
   }
 }
 
 interface DotMatrixVisualizerProps {
   isPlaying: boolean;
+  isBuffering?: boolean;
+  isVisible?: boolean;
   position?: number;
 }
 
-export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatrixVisualizerProps) {
+export default function DotMatrixVisualizer({
+  isPlaying,
+  isBuffering = false,
+  isVisible,
+  position = 0,
+}: DotMatrixVisualizerProps) {
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
+  const isModalOpen = usePlayerStore((state) => state.isModalOpen);
   const styles = useMemo(() => createStyles(theme), [theme]);
+
+  // Visualizer is strictly active ONLY when isPlaying && !isBuffering and modal is open
+  const modalActive = isVisible !== undefined ? isVisible : isModalOpen;
+  const isAnimating = isPlaying && !isBuffering && modalActive;
+
+  // Crisp monochrome white/silver in Dark Mode and dark charcoal in Light Mode
+  const barColor = useMemo(
+    () => (mode === 'dark' ? '#E4E4E7' : '#27272A'),
+    [mode]
+  );
 
   // Theme-adaptive monogram watermark
   const logoSource = useMemo(
@@ -94,15 +104,11 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
     [mode]
   );
 
-  // Initialize 30 animated values once without render-time ref access
+  // Initialize 24 animated values once with RESTING_SCALE
   const [animValues] = useState(() =>
-    Array.from(
-      { length: NUM_COLUMNS },
-      (_, i) => new Animated.Value(getRestingHeight(i))
-    )
+    Array.from({ length: NUM_BARS }, () => new Animated.Value(RESTING_SCALE))
   );
 
-  // Keep track of active composite animations and latest position
   const animationsRef = useRef<Animated.CompositeAnimation[]>([]);
   const lastPositionRef = useRef<number>(position);
   const positionRef = useRef<number>(position);
@@ -111,11 +117,11 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
     positionRef.current = position;
   }, [position]);
 
-  // Start continuous rhythmic beat-pulse loop on each column
-  const startBeatLoop = useCallback(
-    (colIdx: number) => {
-      const val = animValues[colIdx];
-      const cfg = getColumnPeak(colIdx, positionRef.current);
+  // Start continuous rhythmic beat loop for a single bar
+  const startBarLoop = useCallback(
+    (barIdx: number) => {
+      const val = animValues[barIdx];
+      const cfg = getBarConfig(barIdx, positionRef.current);
 
       const loop = Animated.loop(
         Animated.sequence([
@@ -138,7 +144,7 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
             useNativeDriver: true,
           }),
           Animated.timing(val, {
-            toValue: getRestingHeight(colIdx),
+            toValue: RESTING_SCALE,
             duration: cfg.dur2 * 0.9,
             easing: Easing.in(Easing.quad),
             useNativeDriver: true,
@@ -146,7 +152,7 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
         ])
       );
 
-      animationsRef.current[colIdx] = loop;
+      animationsRef.current[barIdx] = loop;
       loop.start();
     },
     [animValues]
@@ -154,20 +160,20 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
 
   // Main playback state coordinator
   useEffect(() => {
-    // Clear any previous animations
+    // Clear any previous running animations
     animationsRef.current.forEach((anim) => anim?.stop());
     animationsRef.current = [];
 
-    if (isPlaying) {
-      animValues.forEach((_, colIdx) => {
-        startBeatLoop(colIdx);
+    if (isAnimating) {
+      animValues.forEach((_, barIdx) => {
+        startBarLoop(barIdx);
       });
     } else {
-      // Smoothly settle all columns to a minimal 1–2 dot resting baseline
-      animValues.forEach((val, i) => {
+      // Smoothly reset bars to resting height when paused, buffering, or modal closed
+      animValues.forEach((val) => {
         Animated.timing(val, {
-          toValue: getRestingHeight(i),
-          duration: 380,
+          toValue: RESTING_SCALE,
+          duration: 250,
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }).start();
@@ -177,39 +183,37 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
     return () => {
       animationsRef.current.forEach((anim) => anim?.stop());
     };
-  }, [isPlaying, animValues, startBeatLoop]);
+  }, [isAnimating, animValues, startBarLoop]);
 
-  // Real-time scrubbing / position phase response
+  // Real-time scrubbing response: trigger energetic ripple on seek
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isAnimating) return;
 
-    // Detect if position jumped significantly (e.g. user dragged the seek slider)
     const posDelta = Math.abs(position - lastPositionRef.current);
     lastPositionRef.current = position;
 
     if (posDelta > 0.8) {
-      // User scrubbed the slider: fire an energetic reactive spike across the spectrum
-      animValues.forEach((val, colIdx) => {
-        const cfg = getColumnPeak(colIdx, position);
+      animValues.forEach((val, barIdx) => {
+        const cfg = getBarConfig(barIdx, position);
         Animated.sequence([
           Animated.timing(val, {
             toValue: cfg.peak1,
-            duration: 85,
+            duration: 80,
             easing: Easing.out(Easing.quad),
             useNativeDriver: true,
           }),
         ]).start(() => {
-          if (isPlaying) {
-            startBeatLoop(colIdx);
+          if (isAnimating) {
+            startBarLoop(barIdx);
           }
         });
       });
     }
-  }, [position, isPlaying, animValues, startBeatLoop]);
+  }, [position, isAnimating, animValues, startBarLoop]);
 
   return (
     <View style={styles.stage}>
-      {/* Subtle Centered Monogram Watermark behind the dot matrix */}
+      {/* Subtle Centered Monogram Watermark behind the bars */}
       <View style={styles.watermarkWrapper} pointerEvents="none">
         <Image
           source={logoSource}
@@ -218,53 +222,20 @@ export default function DotMatrixVisualizer({ isPlaying, position = 0 }: DotMatr
         />
       </View>
 
-      {/* Main Visualizer Content */}
+      {/* Lightweight 24-Bar Monochrome Spectrum Visualizer */}
       <View style={styles.visualizerContent}>
-        {/* Upper Active Spectrum Bars (up to 14 dots high) */}
-        <View style={styles.matrixRow}>
-          {animValues.map((animVal, colIdx) => (
-            <View key={`col-up-${colIdx}`} style={styles.column}>
+        <View style={styles.barsContainer}>
+          {animValues.map((animVal, barIdx) => (
+            <View key={`bar-wrap-${barIdx}`} style={styles.barWrapper}>
               <Animated.View
                 style={[
-                  styles.upperBar,
+                  styles.bar,
                   {
+                    backgroundColor: barColor,
                     transform: [{ scaleY: animVal }],
                   },
                 ]}
-              >
-                {UPPER_OPACITIES.map((opacity, dotIdx) => (
-                  <View
-                    key={`dot-up-${colIdx}-${dotIdx}`}
-                    style={[styles.dot, { opacity }]}
-                  />
-                ))}
-              </Animated.View>
-            </View>
-          ))}
-        </View>
-
-        {/* Center Horizon Baseline */}
-        <View style={styles.horizonLine} />
-
-        {/* Lower Mirrored Reflection Bars (up to 8 dots deep) */}
-        <View style={styles.matrixRow}>
-          {animValues.map((animVal, colIdx) => (
-            <View key={`col-low-${colIdx}`} style={styles.column}>
-              <Animated.View
-                style={[
-                  styles.lowerBar,
-                  {
-                    transform: [{ scaleY: animVal }],
-                  },
-                ]}
-              >
-                {LOWER_OPACITIES.map((opacity, dotIdx) => (
-                  <View
-                    key={`dot-low-${colIdx}-${dotIdx}`}
-                    style={[styles.dot, { opacity }]}
-                  />
-                ))}
-              </Animated.View>
+              />
             </View>
           ))}
         </View>

@@ -24,54 +24,31 @@ export const createStyles = (theme: ThemeColors) =>
       justifyContent: 'center',
     },
     watermarkImage: {
-      width: 150,
-      height: 150,
-      opacity: 0.055,
+      width: 140,
+      height: 140,
+      opacity: 0.05,
     },
     visualizerContent: {
       width: '100%',
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 1,
-      paddingHorizontal: 12,
     },
-    matrixRow: {
+    barsContainer: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 3.5,
+      height: 64,
+      gap: 5,
     },
-    column: {
+    barWrapper: {
+      height: 64,
+      justifyContent: 'center',
       alignItems: 'center',
-      width: 4,
     },
-    upperBar: {
-      width: 4,
-      gap: 3,
-      flexDirection: 'column-reverse',
-      alignItems: 'center',
-      transformOrigin: 'bottom',
-    },
-    horizonLine: {
-      width: '88%',
-      maxWidth: 260,
-      height: 1,
-      backgroundColor: theme.primary,
-      opacity: 0.18,
-      marginVertical: 4,
-      borderRadius: 0.5,
-    },
-    lowerBar: {
-      width: 4,
-      gap: 3,
-      flexDirection: 'column',
-      alignItems: 'center',
-      transformOrigin: 'top',
-    },
-    dot: {
-      width: 4,
-      height: 4,
-      borderRadius: 1,
-      backgroundColor: theme.primary,
+    bar: {
+      width: 3,
+      height: 52,
+      borderRadius: 2,
     },
   });

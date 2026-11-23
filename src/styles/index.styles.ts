@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Platform } from 'react-native';
 import { ThemeColors } from '@/constants/theme';
 
 export const createStyles = (theme: ThemeColors) =>
@@ -580,7 +580,19 @@ export const createStyles = (theme: ThemeColors) =>
       justifyContent: 'center',
     },
     // Playlist Detail Hero View
+    playlistDetailContainer: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    playlistDetailFixedHero: {
+      backgroundColor: theme.background,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+      paddingBottom: 14,
+      zIndex: 10,
+    },
     playlistDetailHeader: {
+      paddingTop: 8,
       paddingBottom: 16,
     },
     playlistDetailNavRow: {
@@ -588,9 +600,9 @@ export const createStyles = (theme: ThemeColors) =>
       alignItems: 'center',
       justifyContent: 'space-between',
       paddingHorizontal: 16,
-      paddingTop: 12,
+      paddingTop: 10,
       paddingBottom: 4,
-      marginBottom: 14,
+      backgroundColor: theme.background,
     },
     playlistDetailNavLeft: {
       flexDirection: 'row',
@@ -630,26 +642,26 @@ export const createStyles = (theme: ThemeColors) =>
     },
     playlistHeroContainer: {
       alignItems: 'center',
-      paddingTop: 8,
-      paddingBottom: 16,
+      paddingTop: 4,
+      paddingBottom: 0,
       paddingHorizontal: 20,
     },
     playlistHeroCover: {
-      width: 160,
-      height: 160,
-      borderRadius: 20,
+      width: 120,
+      height: 120,
+      borderRadius: 16,
       overflow: 'hidden',
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
       alignItems: 'center',
       justifyContent: 'center',
-      marginBottom: 16,
+      marginBottom: 10,
       shadowColor: '#000',
-      shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.35,
-      shadowRadius: 10,
-      elevation: 6,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.3,
+      shadowRadius: 8,
+      elevation: 5,
     },
     playlistHeroCoverImage: {
       width: '100%',
@@ -663,18 +675,18 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.surfaceElevated,
     },
     playlistHeroTitle: {
-      fontSize: 22,
+      fontSize: 20,
       fontWeight: '700',
       color: theme.textPrimary,
       textAlign: 'center',
-      marginBottom: 6,
+      marginBottom: 4,
     },
     playlistHeroSubtitleRow: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 8,
-      marginBottom: 18,
+      gap: 6,
+      marginBottom: 12,
       flexWrap: 'wrap',
     },
     playlistHeroSubtitle: {
@@ -701,9 +713,32 @@ export const createStyles = (theme: ThemeColors) =>
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: 12,
+      gap: 10,
       width: '100%',
-      marginTop: 4,
+    },
+    playlistFilterContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surfaceElevated,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: theme.border,
+      paddingHorizontal: 10,
+      paddingVertical: Platform.OS === 'ios' ? 7 : 4,
+      marginTop: 10,
+      width: '100%',
+    },
+    playlistFilterIcon: {
+      marginRight: 6,
+    },
+    playlistFilterInput: {
+      flex: 1,
+      fontSize: 13,
+      color: theme.textPrimary,
+      paddingVertical: 0,
+    },
+    playlistFilterClearBtn: {
+      padding: 4,
     },
     playlistHeroPlayAllBtn: {
       flex: 1,

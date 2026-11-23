@@ -29,7 +29,8 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       source TEXT NOT NULL CHECK(source IN ('local', 'youtube')),
       is_synced INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 0
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_playlist_only INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks (user_id);
@@ -46,6 +47,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       sync_version INTEGER NOT NULL DEFAULT 1,
       is_synced INTEGER NOT NULL DEFAULT 0,
       is_public INTEGER NOT NULL DEFAULT 0,
+      is_imported INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -76,6 +78,26 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     await db.execAsync('ALTER TABLE tracks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;');
   } catch {
     // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync('ALTER TABLE tracks ADD COLUMN is_playlist_only INTEGER NOT NULL DEFAULT 0;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  // Backfill: Remove existing un-downloaded cloud tracks from "Your Library -> All Songs"
+  // if they belong to a playlist.
+  try {
+    await db.execAsync(`
+      UPDATE tracks
+      SET is_playlist_only = 1
+      WHERE COALESCE(is_playlist_only, 0) = 0
+        AND (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')
+        AND id IN (SELECT DISTINCT track_id FROM playlist_tracks);
+    `);
+  } catch {
+    // Ignore if tables not yet populated
   }
 
   try {
@@ -119,6 +141,15 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
   } catch {
     // Column already exists, safe to ignore
   }
+
+  try {
+    await db.execAsync('ALTER TABLE playlists ADD COLUMN is_imported INTEGER NOT NULL DEFAULT 0;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  // Safe startup cleanup for empty duplicate imported playlists
+  await cleanupDuplicateImportedPlaylists();
 
   return db;
 }
@@ -242,19 +273,114 @@ export async function updatePlaylistPublicStatus(
   );
 }
 
+export async function upsertTrack(track: Track): Promise<void> {
+  const db = await getDatabase();
+  const now = track.created_at || new Date().toISOString();
+  await db.runAsync(
+    `INSERT OR IGNORE INTO tracks (
+      id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri, duration, source, is_synced, created_at, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      track.id,
+      track.user_id || 'local_guest',
+      track.youtube_id || null,
+      track.title || 'Unknown Title',
+      track.artist || 'Unknown Artist',
+      track.local_audio_uri || '',
+      track.local_artwork_uri || null,
+      track.duration || 0,
+      track.source || 'youtube',
+      track.is_synced ?? 0,
+      now,
+      track.sort_order ?? 0,
+    ]
+  );
+
+  await db.runAsync(
+    `UPDATE tracks SET
+      user_id = COALESCE(?, user_id),
+      youtube_id = COALESCE(?, youtube_id),
+      title = ?,
+      artist = ?,
+      local_audio_uri = CASE WHEN ? != '' THEN ? ELSE local_audio_uri END,
+      local_artwork_uri = COALESCE(?, local_artwork_uri),
+      duration = CASE WHEN ? > 0 THEN ? ELSE duration END,
+      source = ?,
+      is_synced = COALESCE(?, is_synced)
+    WHERE id = ?`,
+    [
+      track.user_id || 'local_guest',
+      track.youtube_id || null,
+      track.title || 'Unknown Title',
+      track.artist || 'Unknown Artist',
+      track.local_audio_uri || '',
+      track.local_audio_uri || '',
+      track.local_artwork_uri || null,
+      track.duration || 0,
+      track.duration || 0,
+      track.source || 'youtube',
+      track.is_synced ?? 0,
+      track.id,
+    ]
+  );
+}
+
+/**
+ * Safe cleanup helper that removes empty (0 tracks) duplicate playlist rows
+ * that share the same share_code as an existing populated playlist.
+ */
+export async function cleanupDuplicateImportedPlaylists(): Promise<number> {
+  try {
+    const db = await getDatabase();
+    const emptyDups = await db.getAllAsync<{ id: string }>(
+      `SELECT p1.id
+       FROM playlists p1
+       LEFT JOIN playlist_tracks pt1 ON p1.id = pt1.playlist_id
+       WHERE p1.share_code IS NOT NULL AND TRIM(p1.share_code) != ''
+       GROUP BY p1.id
+       HAVING COUNT(pt1.track_id) = 0
+       AND EXISTS (
+         SELECT 1
+         FROM playlists p2
+         JOIN playlist_tracks pt2 ON p2.id = pt2.playlist_id
+         WHERE UPPER(p2.share_code) = UPPER(p1.share_code)
+         AND p2.id != p1.id
+       )`
+    );
+
+    let removed = 0;
+    if (emptyDups.length > 0) {
+      await db.withTransactionAsync(async () => {
+        for (const row of emptyDups) {
+          await db.runAsync('DELETE FROM playlist_tracks WHERE playlist_id = ?', [row.id]);
+          await db.runAsync('DELETE FROM playlists WHERE id = ?', [row.id]);
+          removed++;
+        }
+      });
+    }
+
+    return removed;
+  } catch (err) {
+    console.warn('[database] cleanupDuplicateImportedPlaylists error:', err);
+    return 0;
+  }
+}
+
 export async function createPlaylist(
   name: string,
   coverUri?: string | null,
   shareCode?: string | null,
   customId?: string,
   userId: string = 'local_guest',
-  isPublic: boolean | number = 0
+  isPublic: boolean | number = 0,
+  isImported: boolean | number = 0
 ): Promise<Playlist> {
   const db = await getDatabase();
   const id = customId || `pl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const now = new Date().toISOString();
   const cleanName = name.trim() || 'Untitled Playlist';
   const publicFlag = isPublic ? 1 : 0;
+  const importedFlag = isImported ? 1 : 0;
   const playlist: Playlist = {
     id,
     user_id: userId,
@@ -265,13 +391,15 @@ export async function createPlaylist(
     sync_version: 1,
     is_synced: 0,
     is_public: publicFlag,
+    is_imported: importedFlag,
     created_at: now,
     track_count: 0,
   };
 
+  // Safe UPSERT (INSERT OR IGNORE + UPDATE) to prevent triggering ON DELETE CASCADE
   await db.runAsync(
-    `INSERT OR REPLACE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, is_imported, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       playlist.id,
       playlist.user_id,
@@ -282,7 +410,26 @@ export async function createPlaylist(
       playlist.sync_version ?? 1,
       0,
       playlist.is_public ?? 0,
+      playlist.is_imported ?? 0,
       playlist.created_at,
+    ]
+  );
+
+  await db.runAsync(
+    `UPDATE playlists SET 
+       name = ?, 
+       cover_uri = COALESCE(?, cover_uri), 
+       share_code = COALESCE(?, share_code), 
+       is_public = ?,
+       is_imported = ?
+     WHERE id = ?`,
+    [
+      playlist.name,
+      playlist.cover_uri ?? null,
+      playlist.share_code ?? null,
+      playlist.is_public ?? 0,
+      playlist.is_imported ?? 0,
+      playlist.id,
     ]
   );
 
@@ -328,6 +475,15 @@ export async function addTrackToPlaylist(
 ): Promise<boolean> {
   const db = await getDatabase();
 
+  // Guard: Block local device tracks (must have a valid youtube_id)
+  const track = await db.getFirstAsync<{ id: string; youtube_id: string | null }>(
+    'SELECT id, youtube_id FROM tracks WHERE id = ?',
+    [trackId]
+  );
+  if (!track || !track.youtube_id) {
+    return false;
+  }
+
   // Guard against duplicate track in playlist
   const existing = await db.getFirstAsync<{ id: string }>(
     'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
@@ -361,6 +517,16 @@ export async function addTracksToPlaylist(
 ): Promise<number> {
   if (trackIds.length === 0) return 0;
   const db = await getDatabase();
+
+  // Guard: Filter out tracks that do not have a valid youtube_id
+  const placeholders = trackIds.map(() => '?').join(',');
+  const validRows = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM tracks WHERE id IN (${placeholders}) AND youtube_id IS NOT NULL AND youtube_id != ''`,
+    trackIds
+  );
+  const validTrackIds = validRows.map((r) => r.id);
+  if (validTrackIds.length === 0) return 0;
+
   let addedCount = 0;
 
   await db.withTransactionAsync(async () => {
@@ -371,7 +537,7 @@ export async function addTracksToPlaylist(
     let nextPos = (row?.max_pos ?? -1) + 1;
     const now = new Date().toISOString();
 
-    for (const trackId of trackIds) {
+    for (const trackId of validTrackIds) {
       const existing = await db.getFirstAsync<{ id: string }>(
         'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
         [playlistId, trackId]
@@ -500,9 +666,14 @@ export async function upsertPlaylistTrack(
   const id = `pt_${playlistId}_${trackId}`;
   const now = addedAt || new Date().toISOString();
   await db.runAsync(
-    `INSERT OR REPLACE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+    `INSERT OR IGNORE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, playlistId, trackId, position, sortOrder, now, now]
+  );
+  await db.runAsync(
+    `UPDATE playlist_tracks SET position = ?, sort_order = ?, added_at = COALESCE(?, added_at)
+     WHERE playlist_id = ? AND track_id = ?`,
+    [position, sortOrder, now, playlistId, trackId]
   );
 }
 

@@ -297,4 +297,4 @@ create policy "Users can update playlist covers"
 drop policy if exists "Users can delete playlist covers" on storage.objects;
 create policy "Users can delete playlist covers"
   on storage.objects for delete
-  using (bucket_id = 'playlist-covers');
+  using (bucket_id = 'playlist-covers' and auth.uid() is not null);

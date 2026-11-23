@@ -10,9 +10,14 @@ import {
   updateAudioMetadata,
   getPlaybackPosition,
 } from '@/services/audioService';
+import {
+  searchOnlineTracks,
+  resolveOnlineStreamUrl,
+  OnlineTrackResult,
+} from '@/services/musicDownloadService';
 
 export interface PlaybackContext {
-  type: 'library' | 'playlist' | 'search';
+  type: 'library' | 'playlist' | 'search' | 'search-radio';
   name?: string;
 }
 
@@ -29,6 +34,7 @@ interface PlayerState {
   autoPlay: boolean;
   sleepTimerMinutes: number | null;
   isLoading: boolean;
+  isBuffering: boolean;
   isModalOpen: boolean;
 
   // Actions
@@ -52,6 +58,7 @@ interface PlayerState {
   removeTrack: (id: string) => Promise<void>;
   clearAllTracks: () => Promise<void>;
   reorderTracks: (tracks: Track[]) => Promise<void>;
+  fetchRelatedRadioTracks: (seedTrack?: Track | null) => Promise<void>;
   updateCurrentOrLibraryTrackArtwork: (trackId: string, newArtworkUri: string | null) => void;
   updateTrackMetadata: (
     trackId: string,
@@ -59,12 +66,113 @@ interface PlayerState {
   ) => void;
 }
 
+// In-Memory Stream URL Cache (TTL: 30 minutes)
+interface CachedStream {
+  url: string;
+  headers?: Record<string, string>;
+  expiresAt: number;
+}
+
+const STREAM_URL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const streamUrlCache = new Map<string, CachedStream>();
+
+function getCachedStream(trackId: string): CachedStream | null {
+  const cached = streamUrlCache.get(trackId);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    streamUrlCache.delete(trackId);
+    return null;
+  }
+  return cached;
+}
+
+function setCachedStream(trackId: string, url: string, headers?: Record<string, string>): void {
+  streamUrlCache.set(trackId, {
+    url,
+    headers,
+    expiresAt: Date.now() + STREAM_URL_CACHE_TTL_MS,
+  });
+}
+
+function extractYoutubeId(track: Track): string | null {
+  return (
+    track.youtube_id ||
+    (track.id.startsWith('online_youtube_')
+      ? track.id.replace('online_youtube_', '')
+      : track.id.startsWith('stream_youtube_')
+      ? track.id.replace('stream_youtube_', '')
+      : null)
+  );
+}
+
+function prefetchNextTrackStream(queue: Track[], currentIndex: number): void {
+  if (queue.length <= 1) return;
+  const nextIndex = (currentIndex + 1) % queue.length;
+  const nextTrack = queue[nextIndex];
+  if (!nextTrack) return;
+
+  // Only prefetch online tracks not already downloaded and not already cached
+  if (!nextTrack.local_audio_uri && !getCachedStream(nextTrack.id)) {
+    const ytId = extractYoutubeId(nextTrack);
+    if (ytId) {
+      resolveOnlineStreamUrl({
+        id: ytId,
+        title: nextTrack.title,
+        artist: nextTrack.artist,
+        duration: nextTrack.duration,
+        thumbnailUrl: nextTrack.local_artwork_uri,
+        source: 'youtube',
+      })
+        .then((result) => {
+          setCachedStream(nextTrack.id, result.url, result.headers);
+        })
+        .catch(() => {
+          // Silent catch for background prefetch
+        });
+    }
+  }
+}
+
+export function preWarmTrackStreams(tracks: Track[]): void {
+  if (!tracks || tracks.length === 0) return;
+  for (const track of tracks.slice(0, 2)) {
+    if (!track.local_audio_uri && !getCachedStream(track.id)) {
+      const ytId = extractYoutubeId(track);
+      if (ytId) {
+        resolveOnlineStreamUrl({
+          id: ytId,
+          title: track.title,
+          artist: track.artist,
+          duration: track.duration,
+          thumbnailUrl: track.local_artwork_uri,
+          source: 'youtube',
+        })
+          .then((result) => {
+            setCachedStream(track.id, result.url, result.headers);
+          })
+          .catch(() => {});
+      }
+    }
+  }
+}
+
 let sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
 let progressIntervalHandle: ReturnType<typeof setInterval> | null = null;
+let isFetchingRadio = false;
+let playbackSessionId = 0;
+let lastSeekTimestamp = 0;
 
 function startProgressPolling() {
-  if (progressIntervalHandle) return;
+  stopProgressPolling();
+  const currentSession = playbackSessionId;
+
   progressIntervalHandle = setInterval(() => {
+    // Drop execution if session has advanced
+    if (currentSession !== playbackSessionId) {
+      stopProgressPolling();
+      return;
+    }
+
     const state = usePlayerStore.getState();
     if (!state.isPlaying) {
       stopProgressPolling();
@@ -80,7 +188,23 @@ function startProgressPolling() {
 
     if (pos.currentTime >= 0) {
       usePlayerStore.setState((prev) => {
-        const nextPos = pos.currentTime > 0 || prev.position < 1 ? pos.currentTime : prev.position;
+        const isRecentSeek = Date.now() - lastSeekTimestamp < 800;
+        const currentPositionMs = prev.position * 1000;
+        const reportedPositionMs = pos.currentTime * 1000;
+
+        let nextPos = prev.position;
+        // Monotonic Forward Guard:
+        // Ignore jittery backward currentTime reports (< 2500ms jump back) during normal playback
+        if (
+          !isRecentSeek &&
+          reportedPositionMs < currentPositionMs &&
+          currentPositionMs - reportedPositionMs < 2500
+        ) {
+          nextPos = prev.position;
+        } else {
+          nextPos = pos.currentTime;
+        }
+
         const nextDur = duration > 0 ? duration : prev.duration;
         if (Math.abs(prev.position - nextPos) < 0.05 && prev.duration === nextDur) {
           return prev;
@@ -114,6 +238,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   autoPlay: true,
   sleepTimerMinutes: null,
   isLoading: false,
+  isBuffering: false,
   isModalOpen: false,
 
   setTracks: (tracks) => set({ tracks }),
@@ -162,52 +287,130 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playTrack: async (track: Track, customQueue?: Track[], context?: PlaybackContext | null) => {
+    const session = ++playbackSessionId;
+    startProgressPolling();
+
     const state = get();
     const newQueue = customQueue || (state.queue.length > 0 ? state.queue : state.tracks);
     const resolvedQueue = newQueue.some((t) => t.id === track.id)
       ? newQueue
       : [track, ...newQueue];
 
-    if (!track.local_audio_uri && !track.is_streaming) {
-      console.warn('Track audio is not on device:', track.title);
+    let activeTrack = track;
+
+    // 1. Instant Optimistic Track Selection (0ms UI response)
+    // Immediately update currentTrack, isBuffering = true, isPlaying = true, and queue
+    // so mini-player and Now Playing modal update immediately without UI freeze.
+    set({
+      currentTrack: activeTrack,
+      queue: resolvedQueue,
+      isPlaying: true,
+      isLoading: true,
+      isBuffering: true,
+      position: 0,
+      duration: activeTrack.duration || 0,
+      ...(context !== undefined ? { playbackContext: context } : {}),
+    });
+
+    // 2. Check In-Memory Stream URL Cache first (0ms instant startup)
+    const cachedStream = getCachedStream(activeTrack.id);
+    if (cachedStream && !activeTrack.local_audio_uri) {
+      activeTrack = {
+        ...activeTrack,
+        local_audio_uri: cachedStream.url,
+        headers: cachedStream.headers,
+        is_streaming: true,
+      };
+    }
+
+    // 3. Dynamically resolve online audio stream if local_audio_uri is not yet resolved
+    if (!activeTrack.local_audio_uri && (activeTrack.is_streaming || activeTrack.source === 'youtube')) {
+      const ytId = extractYoutubeId(activeTrack);
+
+      if (ytId) {
+        try {
+          const streamResult = await resolveOnlineStreamUrl({
+            id: ytId,
+            title: activeTrack.title,
+            artist: activeTrack.artist,
+            duration: activeTrack.duration,
+            thumbnailUrl: activeTrack.local_artwork_uri,
+            source: 'youtube',
+          });
+
+          // Cache the resolved stream URL (TTL: 30 minutes)
+          setCachedStream(activeTrack.id, streamResult.url, streamResult.headers);
+
+          activeTrack = {
+            ...activeTrack,
+            local_audio_uri: streamResult.url,
+            headers: streamResult.headers,
+            is_streaming: true,
+          };
+
+          set((s) => ({
+            currentTrack: activeTrack,
+            queue: s.queue.map((t) => (t.id === activeTrack.id ? activeTrack : t)),
+          }));
+        } catch (resErr) {
+          console.warn('[PlayerStore] Failed to resolve online stream for:', activeTrack.title, resErr);
+          const currIdx = resolvedQueue.findIndex((t) => t.id === activeTrack.id);
+          const nextIdx = (currIdx + 1) % resolvedQueue.length;
+          if (resolvedQueue.length > 1 && nextIdx !== currIdx) {
+            await get().playTrack(resolvedQueue[nextIdx], resolvedQueue, context);
+            return;
+          }
+        }
+      }
+    }
+
+    if (!activeTrack.local_audio_uri && !activeTrack.is_streaming) {
+      console.warn('Track audio is not on device:', activeTrack.title);
       const nextPlayable = resolvedQueue.find(
-        (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id
+        (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== activeTrack.id
       );
       if (nextPlayable) {
         await get().playTrack(nextPlayable, resolvedQueue, context);
       } else {
-        set({ isPlaying: false, isLoading: false, currentTrack: track });
+        set({ isPlaying: false, isLoading: false, isBuffering: false, currentTrack: activeTrack });
       }
       return;
     }
 
+    const updatedQueue = resolvedQueue.map((t) => (t.id === activeTrack.id ? activeTrack : t));
+
     set({
-      currentTrack: track,
-      queue: resolvedQueue,
+      currentTrack: activeTrack,
+      queue: updatedQueue,
       isLoading: true,
-      isPlaying: true, // Auto-play: proactively activate playing state
+      isPlaying: true,
       position: 0,
-      duration: track.duration || 0,
+      duration: activeTrack.duration || 0,
       ...(context !== undefined ? { playbackContext: context } : {}),
     });
 
+    // 4. Silently prefetch and cache the next track's stream in the background
+    const currTrackIndex = updatedQueue.findIndex((t) => t.id === activeTrack.id);
+    prefetchNextTrackStream(updatedQueue, currTrackIndex);
+
     try {
-      const audioSource = track.headers
-        ? { uri: track.local_audio_uri, headers: track.headers }
-        : track.local_audio_uri;
+      const audioSource = activeTrack.headers
+        ? { uri: activeTrack.local_audio_uri, headers: activeTrack.headers }
+        : activeTrack.local_audio_uri;
 
       const metadata = {
-        title: track.title || 'Unknown Title',
-        artist: track.artist || 'Unknown Artist',
+        title: activeTrack.title || 'Unknown Title',
+        artist: activeTrack.artist || 'Unknown Artist',
         albumTitle: 'JStream',
-        artworkUrl: track.local_artwork_uri || undefined,
+        artworkUrl: activeTrack.local_artwork_uri || undefined,
       };
 
       await loadAndPlayAudio(
         audioSource,
         (status) => {
+          if (session !== playbackSessionId) return; // Stale session callback guard
           const rawPosition = status.currentTime ?? 0;
-          const duration = status.duration > 0 ? status.duration : (track.duration || 0);
+          const duration = status.duration > 0 ? status.duration : (activeTrack.duration || 0);
 
           // While buffering or loading stream, do not flip isPlaying to false prematurely
           const isBuffering =
@@ -223,12 +426,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
               !isNaN(status.currentTime) &&
               status.currentTime >= 0
             ) {
+              const isRecentSeek = Date.now() - lastSeekTimestamp < 800;
+              const currentPositionMs = prevState.position * 1000;
+              const reportedPositionMs = status.currentTime * 1000;
+
+              // Monotonic Forward Guard: ignore backward jitter < 2500ms during normal playback
               if (
-                status.currentTime > 0 ||
-                status.didJustFinish ||
-                prevState.position < 1 ||
-                !status.playing
+                !isRecentSeek &&
+                reportedPositionMs < currentPositionMs &&
+                currentPositionMs - reportedPositionMs < 2500
               ) {
+                nextPosition = prevState.position;
+              } else {
                 nextPosition = status.currentTime;
               }
             }
@@ -236,6 +445,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
             return {
               isPlaying: isBuffering ? true : status.playing,
               isLoading: isBuffering,
+              isBuffering,
               position: nextPosition,
               duration,
             };
@@ -250,18 +460,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
               get().playNext();
             } else {
               pauseAudio();
-              set({ isPlaying: false });
+              set({ isPlaying: false, isBuffering: false, position: 0 });
             }
           }
         },
-        track.headers,
+        activeTrack.headers,
         metadata
       );
 
-      set({ isPlaying: true, isLoading: false });
+      set({ isPlaying: true, isLoading: false, isBuffering: false });
     } catch (error) {
       console.warn('Error playing track:', error);
-      set({ isPlaying: false, isLoading: false });
+      set({ isPlaying: false, isLoading: false, isBuffering: false });
     }
   },
 
@@ -272,7 +482,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     try {
       if (isPlaying) {
         await pauseAudio();
-        set({ isPlaying: false });
+        set({ isPlaying: false, isBuffering: false, isLoading: false });
       } else {
         await resumeAudio();
         set({ isPlaying: true });
@@ -283,47 +493,36 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playNext: async () => {
-    const { queue, currentTrack, isShuffle, repeatMode, playTrack } = get();
+    const { queue, currentTrack, isShuffle, playbackContext, playTrack } = get();
     if (queue.length === 0) return;
 
     const currentIndex = queue.findIndex((t) => t.id === currentTrack?.id);
 
+    let nextIndex: number;
     if (isShuffle && queue.length > 1) {
       // Pick random index different from current
-      let nextIndex: number;
       do {
         nextIndex = Math.floor(Math.random() * queue.length);
       } while (nextIndex === currentIndex && queue.length > 1);
-
-      await playTrack(queue[nextIndex], queue);
-      return;
+    } else {
+      // Loop infinitely by default: wrapping seamlessly to queue[0] on the last track
+      nextIndex = currentIndex >= 0 ? (currentIndex + 1) % queue.length : 0;
     }
 
-    if (currentIndex >= 0 && currentIndex < queue.length - 1) {
-      await playTrack(queue[currentIndex + 1], queue);
-    } else if (repeatMode === 'all') {
-      await playTrack(queue[0], queue);
-    } else {
-      // End of queue (infinite continuous playback):
-      // When reaching the last song, continue seamlessly with a randomized song so music never stops
-      const pool = queue.length > 0 ? queue : get().tracks;
-      if (pool.length > 1) {
-        let nextIndex: number;
-        do {
-          nextIndex = Math.floor(Math.random() * pool.length);
-        } while (nextIndex === currentIndex && pool.length > 1);
-        await playTrack(pool[nextIndex], pool);
-      } else if (pool.length === 1) {
-        await playTrack(pool[0], pool);
-      } else {
-        await stopAndUnloadAudio();
-        set({ isPlaying: false, position: 0 });
+    // Auto-fetch next batch in 'search-radio' mode when remaining tracks <= 2
+    if (playbackContext?.type === 'search-radio') {
+      const remainingTracks = queue.length - 1 - nextIndex;
+      if (remainingTracks <= 2) {
+        const seed = queue[nextIndex] || currentTrack;
+        get().fetchRelatedRadioTracks(seed);
       }
     }
+
+    await playTrack(queue[nextIndex], queue);
   },
 
   playPrevious: async () => {
-    const { queue, currentTrack, position, repeatMode, playTrack, seekTo } = get();
+    const { queue, currentTrack, position, playTrack, seekTo } = get();
     if (queue.length === 0) return;
 
     // If more than 3 seconds in, restart track
@@ -333,17 +532,90 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
 
     const currentIndex = queue.findIndex((t) => t.id === currentTrack?.id);
+    // Tapping Previous on queue[0] wraps to queue[queue.length - 1]
+    const nextIndex = currentIndex > 0 ? currentIndex - 1 : queue.length - 1;
+    await playTrack(queue[nextIndex], queue);
+  },
 
-    if (currentIndex > 0) {
-      await playTrack(queue[currentIndex - 1], queue);
-    } else if (repeatMode === 'all') {
-      await playTrack(queue[queue.length - 1], queue);
-    } else {
-      await seekTo(0);
+  fetchRelatedRadioTracks: async (seedTrack?: Track | null) => {
+    const state = get();
+    const track = seedTrack || state.currentTrack;
+    if (!track || isFetchingRadio) return;
+
+    isFetchingRadio = true;
+    try {
+      const artist = (track.artist || '').trim();
+      const cleanTitle = (track.title || '')
+        .replace(/\(Official.*?\)/gi, '')
+        .replace(/\[Official.*?\]/gi, '')
+        .replace(/ft\..*$/gi, '')
+        .replace(/feat\..*$/gi, '')
+        .replace(/\(.*?\)/g, '')
+        .replace(/\[.*?\]/g, '')
+        .trim();
+
+      const queries = [
+        artist ? `${artist} songs` : cleanTitle,
+        artist && cleanTitle ? `${artist} ${cleanTitle}` : null,
+      ].filter(Boolean) as string[];
+
+      let results: OnlineTrackResult[] = [];
+      for (const q of queries) {
+        try {
+          const batch = await searchOnlineTracks(q);
+          if (batch.length > 0) {
+            results = batch;
+            break;
+          }
+        } catch {
+          // ignore & try fallback query
+        }
+      }
+
+      if (results.length === 0) return;
+
+      const currentQueue = get().queue;
+      const existingVideoIds = new Set(
+        currentQueue
+          .map((t) =>
+            t.youtube_id ||
+            t.id.replace(/^online_youtube_/, '').replace(/^stream_youtube_/, '')
+          )
+          .filter(Boolean)
+      );
+
+      const relatedTracks: Track[] = results
+        .filter((r) => r.id && !existingVideoIds.has(r.id))
+        .slice(0, 15)
+        .map((r) => ({
+          id: `online_youtube_${r.id}`,
+          user_id: 'local_guest',
+          youtube_id: r.id,
+          title: r.title,
+          artist: r.artist || artist || 'Unknown Artist',
+          local_audio_uri: '',
+          local_artwork_uri: r.thumbnailUrl || null,
+          duration: r.duration || 0,
+          source: 'youtube',
+          is_synced: 0,
+          created_at: new Date().toISOString(),
+          is_streaming: true,
+        }));
+
+      if (relatedTracks.length > 0) {
+        set((s) => ({
+          queue: [...s.queue, ...relatedTracks],
+        }));
+      }
+    } catch (err) {
+      console.warn('[PlayerStore] Error fetching related radio tracks:', err);
+    } finally {
+      isFetchingRadio = false;
     }
   },
 
   seekTo: async (seconds: number) => {
+    lastSeekTimestamp = Date.now();
     const clamped = Math.max(0, Math.min(seconds, get().duration || seconds));
     set({ position: clamped });
     try {
@@ -365,7 +637,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         await playNext();
       } else {
         await stopAndUnloadAudio();
-        set({ currentTrack: null, isPlaying: false, position: 0, duration: 0 });
+        set({ currentTrack: null, isPlaying: false, isBuffering: false, position: 0, duration: 0 });
       }
     }
   },
@@ -381,6 +653,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       queue: [],
       currentTrack: null,
       isPlaying: false,
+      isBuffering: false,
       position: 0,
       duration: 0,
     });

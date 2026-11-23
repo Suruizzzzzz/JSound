@@ -13,6 +13,7 @@ export interface Track {
   sort_order?: number;
   is_streaming?: boolean;
   headers?: Record<string, string>;
+  is_playlist_only?: number; // 0 or 1
 }
 
 export interface Playlist {
@@ -26,6 +27,7 @@ export interface Playlist {
   sync_version?: number;
   is_synced: number; // 0 or 1
   is_public?: number; // 0 or 1
+  is_imported?: number; // 0 or 1
   likes_count?: number;
   is_liked?: boolean;
   created_at: string;
@@ -34,10 +36,12 @@ export interface Playlist {
 
 export interface SharedPlaylistData {
   id: string;
+  user_id?: string;
   name: string;
   cover_url: string | null;
   share_code: string;
   created_at: string;
+  updated_at?: string;
   tracks: Track[];
   is_public?: boolean;
   likes_count?: number;

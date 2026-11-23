@@ -428,14 +428,8 @@ export async function resolveOnlineStreamUrl(
               }
 
               if (candidateUrl) {
-                const isPlayable = await verifyStreamUrl(
-                  candidateUrl,
-                  3500,
-                  youtubeHeaders
-                );
-                if (isPlayable) {
-                  return { url: candidateUrl, headers: youtubeHeaders };
-                }
+                // Fast-Path: return primary candidate immediately without blocking verifyStreamUrl network roundtrip
+                return { url: candidateUrl, headers: youtubeHeaders };
               }
             }
           }
@@ -462,14 +456,8 @@ export async function resolveOnlineStreamUrl(
             }
 
             if (candidateUrl) {
-              const isPlayable = await verifyStreamUrl(
-                candidateUrl,
-                3500,
-                youtubeHeaders
-              );
-              if (isPlayable) {
-                return { url: candidateUrl, headers: youtubeHeaders };
-              }
+              // Fast-Path: return progressive candidate immediately
+              return { url: candidateUrl, headers: youtubeHeaders };
             }
           }
         } catch (clientErr) {
@@ -738,7 +726,8 @@ export function isTrackDownloading(trackId: string): boolean {
  */
 export async function downloadTrackToOfflineLibrary(
   track: OnlineTrackResult,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  options?: { isPlaylistOnly?: boolean; targetTrackId?: string }
 ): Promise<Track> {
   let streamResult: ResolvedStreamResult;
   let ext = '.m4a';
@@ -865,9 +854,11 @@ export async function downloadTrackToOfflineLibrary(
     }
   }
 
+  const isPlaylistOnly = options?.isPlaylistOnly ? 1 : 0;
+
   // Insert into SQLite database
   const newTrack: Track = {
-    id: `online_${track.source}_${track.id}`,
+    id: options?.targetTrackId || `online_${track.source}_${track.id}`,
     user_id: 'local_guest',
     youtube_id: track.source === 'youtube' ? track.id : null,
     title: track.title,
@@ -878,13 +869,16 @@ export async function downloadTrackToOfflineLibrary(
     source: 'youtube', // valid according to SQLite CHECK(source IN ('local', 'youtube'))
     is_synced: 0,
     created_at: new Date().toISOString(),
+    is_playlist_only: isPlaylistOnly,
   };
 
   await saveTrack(newTrack);
 
-  // Refresh playerStore
-  const allTracks = await getAllTracks();
-  usePlayerStore.getState().setTracks(allTracks);
+  // Refresh playerStore ONLY if this is a personal library track (not playlist-isolated)
+  if (!isPlaylistOnly) {
+    const allTracks = await getAllTracks();
+    usePlayerStore.getState().setTracks(allTracks);
+  }
 
   return newTrack;
 }

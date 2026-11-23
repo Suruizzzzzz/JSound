@@ -258,16 +258,20 @@ export default function SearchScreen() {
     [offlineTracks]
   );
 
-  // Instant stream or play on row tap
+  // Instant stream or play on row tap (Seeds endless Artist Radio)
   const handleMainPress = async (item: OnlineTrackResult) => {
     const savedTrack = findSavedTrack(item);
 
     if (savedTrack) {
-      // Saved locally: ensure immediate autoplay / toggle play-pause
+      // Saved locally: ensure immediate autoplay and seed Artist Radio
       if (currentTrack?.id === savedTrack.id) {
         await togglePlayPause();
       } else {
-        await playTrack(savedTrack, offlineTracks, { type: 'library', name: 'Local Offline Tracks' });
+        await playTrack(savedTrack, [savedTrack], {
+          type: 'search-radio',
+          name: `${savedTrack.artist || 'Artist'} Radio`,
+        });
+        usePlayerStore.getState().fetchRelatedRadioTracks(savedTrack);
       }
       return;
     }
@@ -306,7 +310,11 @@ export default function SearchScreen() {
         headers: streamResult.headers,
       };
 
-      await playTrack(tempTrack, [tempTrack], { type: 'search', name: 'Online Stream' });
+      await playTrack(tempTrack, [tempTrack], {
+        type: 'search-radio',
+        name: `${item.artist || 'Artist'} Radio`,
+      });
+      usePlayerStore.getState().fetchRelatedRadioTracks(tempTrack);
     } catch (err: any) {
       setModalConfig({
         visible: true,

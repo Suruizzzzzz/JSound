@@ -1,29 +1,48 @@
 import { StyleSheet, Platform } from 'react-native';
 import { ThemeColors } from '@/constants/theme';
 
-export const createStyles = (theme: ThemeColors) =>
-  StyleSheet.create({
+export const createStyles = (theme: ThemeColors) => {
+  const isDark = theme.background === '#141414' || theme.textPrimary === '#F4F4F2';
+
+  return StyleSheet.create({
     modalOverlay: {
       flex: 1,
       backgroundColor: 'rgba(0, 0, 0, 0.75)',
-      justifyContent: 'center',
+      justifyContent: 'flex-end',
       alignItems: 'center',
-      padding: 16,
     },
     modalContent: {
       width: '100%',
-      maxWidth: 420,
-      maxHeight: '90%',
+      maxWidth: 580,
+      height: '85%',
+      maxHeight: '88%',
       backgroundColor: theme.surface,
-      borderRadius: 18,
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
       borderWidth: 1,
+      borderBottomWidth: 0,
       borderColor: theme.border,
-      padding: 20,
+      paddingHorizontal: 20,
+      paddingTop: 8,
+      paddingBottom: Platform.OS === 'ios' ? 24 : 16,
       shadowColor: '#000000',
-      shadowOffset: { width: 0, height: 6 },
+      shadowOffset: { width: 0, height: -6 },
       shadowOpacity: 0.35,
-      shadowRadius: 12,
-      elevation: 12,
+      shadowRadius: 16,
+      elevation: 20,
+      display: 'flex',
+      flexDirection: 'column',
+    },
+    sheetDragHandleContainer: {
+      alignItems: 'center',
+      paddingVertical: 6,
+      marginBottom: 6,
+    },
+    sheetDragHandle: {
+      width: 38,
+      height: 4.5,
+      borderRadius: 3,
+      backgroundColor: theme.border,
     },
     headerRow: {
       flexDirection: 'row',
@@ -45,7 +64,7 @@ export const createStyles = (theme: ThemeColors) =>
     modalSubtitle: {
       fontSize: 12.5,
       color: theme.textSecondary,
-      marginBottom: 14,
+      marginBottom: 12,
       lineHeight: 17,
     },
     // Tabs ("Enter Code" | "Community")
@@ -54,7 +73,7 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.surfaceElevated,
       borderRadius: 10,
       padding: 3,
-      marginBottom: 14,
+      marginBottom: 12,
       borderWidth: 1,
       borderColor: theme.border,
     },
@@ -83,6 +102,16 @@ export const createStyles = (theme: ThemeColors) =>
     navTabTextActive: {
       color: theme.textPrimary,
       fontWeight: '700',
+    },
+    tabContentContainer: {
+      flex: 1,
+      overflow: 'hidden',
+    },
+    codeTabScroll: {
+      flex: 1,
+    },
+    communityTabContainer: {
+      flex: 1,
     },
     // Input Area
     inputContainer: {
@@ -155,6 +184,23 @@ export const createStyles = (theme: ThemeColors) =>
       fontWeight: '700',
       letterSpacing: 1,
       color: theme.primary,
+    },
+    importedBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3.5,
+      paddingHorizontal: 7.5,
+      paddingVertical: 3.5,
+      borderRadius: 6,
+      backgroundColor: isDark ? '#242428' : '#EDEDEB',
+      borderWidth: 1,
+      borderColor: isDark ? '#34343A' : '#D4D4D8',
+    },
+    importedBadgeText: {
+      fontSize: 10.5,
+      fontWeight: '600',
+      letterSpacing: 0.2,
+      color: isDark ? '#D4D4D8' : '#3F3F46',
     },
     // Preview Card
     previewCard: {
@@ -249,9 +295,9 @@ export const createStyles = (theme: ThemeColors) =>
     zeroSongsBanner: {
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: 'rgba(255, 149, 0, 0.1)',
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
       borderWidth: 1,
-      borderColor: 'rgba(255, 149, 0, 0.3)',
+      borderColor: theme.border,
       borderRadius: 10,
       padding: 10,
       gap: 8,
@@ -261,7 +307,7 @@ export const createStyles = (theme: ThemeColors) =>
       flex: 1,
       fontSize: 11.5,
       lineHeight: 16,
-      color: '#FF9500',
+      color: theme.textSecondary,
       fontWeight: '600',
     },
     // Live Download Progress
@@ -300,28 +346,44 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.primary,
     },
     // Community Playlists Section
-    communityList: {
-      maxHeight: 260,
+    communitySearchWrapper: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+      gap: 8,
+      marginBottom: 10,
     },
-    communityFilterRow: {
+    communitySearchInput: {
+      flex: 1,
+      fontSize: 13,
+      fontWeight: '500',
+      color: theme.textPrimary,
+      padding: 0,
+    },
+    communitySortRow: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: 10,
     },
-    communityFilterLabel: {
-      fontSize: 11,
+    communitySortLabel: {
+      fontSize: 11.5,
       fontWeight: '600',
       color: theme.textSecondary,
     },
-    communityFilterButtons: {
+    communitySortButtons: {
       flexDirection: 'row',
       gap: 6,
     },
-    communityFilterBtn: {
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderRadius: 6,
+    communitySortBtn: {
+      paddingHorizontal: 9,
+      paddingVertical: 5,
+      borderRadius: 8,
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
@@ -329,16 +391,16 @@ export const createStyles = (theme: ThemeColors) =>
       alignItems: 'center',
       gap: 4,
     },
-    communityFilterBtnActive: {
+    communitySortBtnActive: {
       backgroundColor: theme.surface,
-      borderColor: theme.primary + '88',
+      borderColor: theme.primary,
     },
-    communityFilterBtnText: {
-      fontSize: 10.5,
+    communitySortBtnText: {
+      fontSize: 11,
       fontWeight: '600',
       color: theme.textSecondary,
     },
-    communityFilterBtnTextActive: {
+    communitySortBtnTextActive: {
       color: theme.primary,
       fontWeight: '700',
     },
@@ -348,15 +410,14 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
-      borderRadius: 12,
+      borderRadius: 14,
       padding: 10,
-      marginBottom: 8,
-      gap: 10,
+      gap: 12,
     },
     communityCover: {
-      width: 40,
-      height: 40,
-      borderRadius: 8,
+      width: 48,
+      height: 48,
+      borderRadius: 10,
       backgroundColor: theme.surface,
       borderWidth: 1,
       borderColor: theme.border,
@@ -370,57 +431,48 @@ export const createStyles = (theme: ThemeColors) =>
     },
     communityInfo: {
       flex: 1,
+      marginRight: 8,
+      justifyContent: 'center',
     },
-    communityTitleRow: {
+    communityTitle: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: theme.textPrimary,
+      letterSpacing: -0.2,
+      marginBottom: 3,
+    },
+    communityMetaRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
     },
-    communityTitle: {
-      fontSize: 13,
-      fontWeight: '700',
-      color: theme.textPrimary,
-      flex: 1,
-    },
     communityMeta: {
-      fontSize: 11,
+      fontSize: 11.5,
       color: theme.textSecondary,
-      marginTop: 2,
+      flexShrink: 1,
     },
-    // Top Rank Badges
+    // Top Rank Badges (#1, #2, #3)
     rankBadge: {
       paddingHorizontal: 5,
       paddingVertical: 1.5,
       borderRadius: 4,
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
       borderWidth: 1,
+      borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
     },
-    rankBadgeTop1: {
-      backgroundColor: 'rgba(255, 215, 0, 0.12)',
-      borderColor: 'rgba(255, 215, 0, 0.45)',
-    },
-    rankBadgeTop2: {
-      backgroundColor: 'rgba(192, 192, 192, 0.12)',
-      borderColor: 'rgba(192, 192, 192, 0.45)',
-    },
-    rankBadgeTop3: {
-      backgroundColor: 'rgba(205, 127, 50, 0.12)',
-      borderColor: 'rgba(205, 127, 50, 0.45)',
-    },
+    rankBadgeTop1: {},
+    rankBadgeTop2: {},
+    rankBadgeTop3: {},
     rankBadgeText: {
-      fontSize: 9,
-      fontWeight: '800',
-      letterSpacing: 0.5,
+      fontSize: 9.5,
+      fontWeight: '700',
+      letterSpacing: 0.3,
+      color: theme.textSecondary,
     },
-    rankBadgeTextTop1: {
-      color: '#FFD700',
-    },
-    rankBadgeTextTop2: {
-      color: '#C0C0C0',
-    },
-    rankBadgeTextTop3: {
-      color: '#CD7F32',
-    },
-    // Heart Action Buttons
+    rankBadgeTextTop1: {},
+    rankBadgeTextTop2: {},
+    rankBadgeTextTop3: {},
+    // Heart & Import Action Buttons
     communityActionsRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -430,8 +482,8 @@ export const createStyles = (theme: ThemeColors) =>
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
-      paddingHorizontal: 7,
-      paddingVertical: 5,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
       borderRadius: 8,
       backgroundColor: theme.surface,
       borderWidth: 1,
@@ -466,7 +518,7 @@ export const createStyles = (theme: ThemeColors) =>
     },
     communityImportBtn: {
       paddingHorizontal: 10,
-      paddingVertical: 5,
+      paddingVertical: 6,
       borderRadius: 8,
       backgroundColor: theme.surface,
       borderWidth: 1,
@@ -483,8 +535,8 @@ export const createStyles = (theme: ThemeColors) =>
     emptyCommunityText: {
       textAlign: 'center',
       color: theme.textSecondary,
-      fontSize: 12,
-      paddingVertical: 24,
+      fontSize: 12.5,
+      lineHeight: 18,
     },
     // Error Box
     messageBox: {
@@ -507,11 +559,14 @@ export const createStyles = (theme: ThemeColors) =>
       alignItems: 'center',
       justifyContent: 'flex-end',
       gap: 8,
-      marginTop: 6,
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      marginTop: 4,
     },
     modalCancelBtn: {
       paddingVertical: 8,
-      paddingHorizontal: 13,
+      paddingHorizontal: 14,
       borderRadius: 10,
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
@@ -561,3 +616,4 @@ export const createStyles = (theme: ThemeColors) =>
       color: theme.onPrimary,
     },
   });
+};

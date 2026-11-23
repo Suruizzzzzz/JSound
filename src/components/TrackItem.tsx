@@ -79,7 +79,16 @@ export default function TrackItem({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const isCurrent = isCurrentTrack !== undefined ? isCurrentTrack : currentTrack?.id === track.id;
   const activePlaying = isPlayingProp !== undefined ? isPlayingProp : isPlayingStore;
-  const isUnavailable = !track.local_audio_uri && !track.is_streaming;
+  const isCloud =
+    !track.local_audio_uri &&
+    Boolean(
+      track.youtube_id ||
+        track.source === 'youtube' ||
+        track.is_streaming ||
+        track.id.startsWith('online_') ||
+        track.id.startsWith('stream_')
+    );
+  const isUnavailable = !track.local_audio_uri && !isCloud;
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
@@ -256,13 +265,29 @@ export default function TrackItem({
             <Text style={styles.duration}>
               {formatDuration(track.duration)}
             </Text>
-            {isUnavailable && downloadProgress === undefined && (
-              <>
-                <Text style={styles.metaDot}>•</Text>
-                <Text style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
-                  Offline / Not on device
-                </Text>
-              </>
+            {downloadProgress === undefined && (
+              track.local_audio_uri ? (
+                <>
+                  <Text style={styles.metaDot}>•</Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, fontWeight: '600' }}>
+                    Offline
+                  </Text>
+                </>
+              ) : isCloud ? (
+                <>
+                  <Text style={styles.metaDot}>•</Text>
+                  <Text style={{ fontSize: 11, color: theme.textSecondary, fontWeight: '600' }}>
+                    ☁ Cloud
+                  </Text>
+                </>
+              ) : isUnavailable ? (
+                <>
+                  <Text style={styles.metaDot}>•</Text>
+                  <Text style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
+                    Unavailable
+                  </Text>
+                </>
+              ) : null
             )}
           </View>
         </View>
@@ -287,7 +312,7 @@ export default function TrackItem({
           {/* Normal Mode: Bookmark & Delete Buttons */}
           {!selectionMode && (
             <>
-              {onAddToPlaylist && (
+              {onAddToPlaylist && Boolean(track.youtube_id) && (
                 <TouchableOpacity
                   style={styles.actionIconButton}
                   onPress={() => onAddToPlaylist(track)}

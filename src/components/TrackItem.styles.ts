@@ -14,9 +14,6 @@ export const createStyles = (theme: ThemeColors) =>
     },
     activeContainer: {
       backgroundColor: theme.surfaceElevated,
-      borderLeftWidth: 3.5,
-      borderLeftColor: theme.primary,
-      paddingLeft: 12.5,
     },
     selectedContainer: {
       backgroundColor: theme.surfaceElevated,
