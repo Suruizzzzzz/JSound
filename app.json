@@ -59,6 +59,7 @@
           "enableBackgroundPlayback": true
         }
       ],
+      "./plugins/withExpoAudioLockScreen",
       "expo-asset",
       "expo-secure-store",
       "expo-web-browser"

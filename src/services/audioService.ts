@@ -11,9 +11,12 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { EventSubscription } from 'expo';
+import { usePlayerStore } from '@/store/playerStore';
 
 let playerInstance: AudioPlayer | null = null;
 let statusSubscription: EventSubscription | null = null;
+let nextTrackSubscription: EventSubscription | null = null;
+let previousTrackSubscription: EventSubscription | null = null;
 let currentStatusCallback: ((status: AudioStatus) => void) | null = null;
 let isAudioModeConfigured = false;
 let shouldAutoPlay = true;
@@ -45,6 +48,43 @@ function attachStatusListener(player: AudioPlayer) {
       // ignore
     }
     statusSubscription = null;
+  }
+
+  if (nextTrackSubscription) {
+    try {
+      nextTrackSubscription.remove();
+    } catch {
+      // ignore
+    }
+    nextTrackSubscription = null;
+  }
+
+  if (previousTrackSubscription) {
+    try {
+      previousTrackSubscription.remove();
+    } catch {
+      // ignore
+    }
+    previousTrackSubscription = null;
+  }
+
+  // Native lock-screen action listeners
+  try {
+    nextTrackSubscription = (player as any).addListener('nextTrack', () => {
+      console.log('[AudioService] Lock-screen Next Track action received');
+      usePlayerStore.getState().playNext();
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    previousTrackSubscription = (player as any).addListener('previousTrack', () => {
+      console.log('[AudioService] Lock-screen Previous Track action received');
+      usePlayerStore.getState().playPrevious();
+    });
+  } catch {
+    // ignore
   }
 
   statusSubscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
@@ -178,6 +218,24 @@ export async function loadAndPlayAudio(
         // Reuse existing player with .replace()
         playerInstance.replace(source);
 
+        // Proactively update lock screen controls and metadata immediately on replace
+        if (!isExpoGo) {
+          try {
+            if (typeof playerInstance.setActiveForLockScreen === 'function') {
+              const res: any = (playerInstance as any).setActiveForLockScreen(
+                true,
+                currentTrackMetadata,
+                DEFAULT_LOCK_SCREEN_OPTIONS
+              );
+              if (res && typeof res.catch === 'function') {
+                res.catch(() => {});
+              }
+            }
+          } catch {
+            // Suppress
+          }
+        }
+
         // If player is already loaded with this item, start playback immediately
         if (playerInstance.isLoaded) {
           console.log('[AudioService] Player already loaded on replace. Starting playback...');
@@ -211,6 +269,24 @@ export async function loadAndPlayAudio(
 
     // Attach listener BEFORE calling play to catch early status updates & prevent race conditions
     attachStatusListener(player);
+
+    // Proactively register lock screen controls and metadata immediately
+    if (!isExpoGo) {
+      try {
+        if (typeof player.setActiveForLockScreen === 'function') {
+          const res: any = (player as any).setActiveForLockScreen(
+            true,
+            currentTrackMetadata,
+            DEFAULT_LOCK_SCREEN_OPTIONS
+          );
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        }
+      } catch (lockErr) {
+        console.warn('[AudioService] Failed to set initial lock screen controls:', lockErr);
+      }
+    }
 
     // Proactively call play() if already loaded, otherwise listener will trigger it
     if (player.isLoaded) {
@@ -258,6 +334,26 @@ export async function stopAndUnloadAudio(): Promise<void> {
     }
     statusSubscription = null;
   }
+
+  if (nextTrackSubscription) {
+    try {
+      nextTrackSubscription.remove();
+    } catch {
+      // ignore
+    }
+    nextTrackSubscription = null;
+  }
+
+  if (previousTrackSubscription) {
+    try {
+      previousTrackSubscription.remove();
+    } catch {
+      // ignore
+    }
+    previousTrackSubscription = null;
+  }
+
+
 
   if (playerInstance) {
     const playerToRelease = playerInstance;
