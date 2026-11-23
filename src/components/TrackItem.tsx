@@ -38,6 +38,8 @@ export interface TrackItemProps {
   onLongPress?: () => void;
   onAddToPlaylist?: (track: Track) => void;
   onPlay?: () => void;
+  isCurrentTrack?: boolean;
+  isPlaying?: boolean;
 }
 
 function formatDuration(seconds: number): string {
@@ -65,15 +67,18 @@ export default function TrackItem({
   onLongPress,
   onAddToPlaylist,
   onPlay,
+  isCurrentTrack,
+  isPlaying: isPlayingProp,
 }: TrackItemProps) {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
-  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const isPlayingStore = usePlayerStore((state) => state.isPlaying);
   const playTrack = usePlayerStore((state) => state.playTrack);
   const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
   const theme = useThemeStore((state) => state.theme);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const isCurrent = currentTrack?.id === track.id;
+  const isCurrent = isCurrentTrack !== undefined ? isCurrentTrack : currentTrack?.id === track.id;
+  const activePlaying = isPlayingProp !== undefined ? isPlayingProp : isPlayingStore;
   const isUnavailable = !track.local_audio_uri && !track.is_streaming;
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -156,7 +161,7 @@ export default function TrackItem({
     }
 
     if (isCurrent) {
-      if (!isPlaying) {
+      if (!activePlaying) {
         resumeAudio();
         usePlayerStore.setState({ isPlaying: true });
       } else {
@@ -174,6 +179,7 @@ export default function TrackItem({
           styles.container,
           isCurrent && styles.activeContainer,
           isSelected && styles.selectedContainer,
+          isSelected && isCurrent && styles.selectedActiveContainer,
         ]}
         activeOpacity={0.7}
         onPress={handlePress}
@@ -197,15 +203,24 @@ export default function TrackItem({
         )}
 
         {/* Artwork Thumbnail / Minimalist Monochrome Placeholder */}
-        <View style={styles.artworkContainer}>
+        <View style={[styles.artworkContainer, isCurrent && styles.activeArtworkContainer]}>
           {track.local_artwork_uri ? (
             <Image source={{ uri: track.local_artwork_uri }} style={styles.artwork} />
           ) : (
             <View style={styles.placeholder}>
               <Ionicons
-                name={isCurrent && isPlaying ? 'volume-high' : 'musical-note'}
+                name="musical-note"
                 size={18}
                 color={isCurrent ? theme.primary : theme.textSecondary}
+              />
+            </View>
+          )}
+          {isCurrent && (
+            <View style={styles.nowPlayingArtworkBadge}>
+              <Ionicons
+                name={activePlaying ? 'volume-high' : 'pause'}
+                size={10}
+                color={theme.onPrimary}
               />
             </View>
           )}
@@ -213,12 +228,26 @@ export default function TrackItem({
 
         {/* Title & Artist info */}
         <View style={styles.info}>
-          <Text
-            style={[styles.title, isCurrent && styles.activeTitle]}
-            numberOfLines={1}
-          >
-            {track.title}
-          </Text>
+          <View style={styles.titleRow}>
+            <Text
+              style={[styles.title, isCurrent && styles.activeTitle]}
+              numberOfLines={1}
+            >
+              {track.title}
+            </Text>
+            {isCurrent && (
+              <View style={styles.nowPlayingTitleBadge}>
+                <Ionicons
+                  name={activePlaying ? 'volume-high' : 'pause'}
+                  size={10}
+                  color={theme.primary}
+                />
+                <Text style={styles.nowPlayingTitleBadgeText}>
+                  {activePlaying ? 'PLAYING' : 'PAUSED'}
+                </Text>
+              </View>
+            )}
+          </View>
           <View style={styles.metaRow}>
             <Text style={styles.artist} numberOfLines={1}>
               {track.artist}

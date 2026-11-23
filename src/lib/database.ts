@@ -325,8 +325,18 @@ export async function deletePlaylist(playlistId: string): Promise<void> {
 export async function addTrackToPlaylist(
   playlistId: string,
   trackId: string
-): Promise<void> {
+): Promise<boolean> {
   const db = await getDatabase();
+
+  // Guard against duplicate track in playlist
+  const existing = await db.getFirstAsync<{ id: string }>(
+    'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
+    [playlistId, trackId]
+  );
+  if (existing) {
+    return false;
+  }
+
   const id = `pt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const now = new Date().toISOString();
 
@@ -338,10 +348,48 @@ export async function addTrackToPlaylist(
   const nextPos = (row?.max_pos ?? -1) + 1;
 
   await db.runAsync(
-    `INSERT OR REPLACE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+    `INSERT OR IGNORE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [id, playlistId, trackId, nextPos, nextPos, now, now]
   );
+  return true;
+}
+
+export async function addTracksToPlaylist(
+  playlistId: string,
+  trackIds: string[]
+): Promise<number> {
+  if (trackIds.length === 0) return 0;
+  const db = await getDatabase();
+  let addedCount = 0;
+
+  await db.withTransactionAsync(async () => {
+    const row = await db.getFirstAsync<{ max_pos: number | null }>(
+      'SELECT MAX(COALESCE(sort_order, position, 0)) AS max_pos FROM playlist_tracks WHERE playlist_id = ?',
+      [playlistId]
+    );
+    let nextPos = (row?.max_pos ?? -1) + 1;
+    const now = new Date().toISOString();
+
+    for (const trackId of trackIds) {
+      const existing = await db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
+        [playlistId, trackId]
+      );
+      if (!existing) {
+        const id = `pt_${Date.now()}_${Math.random().toString(36).substring(2, 8)}_${addedCount}`;
+        await db.runAsync(
+          `INSERT OR IGNORE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, playlistId, trackId, nextPos, nextPos, now, now]
+        );
+        nextPos++;
+        addedCount++;
+      }
+    }
+  });
+
+  return addedCount;
 }
 
 export async function removeTrackFromPlaylist(
@@ -353,6 +401,38 @@ export async function removeTrackFromPlaylist(
     'DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
     [playlistId, trackId]
   );
+}
+
+export async function removeTracksFromPlaylist(
+  playlistId: string,
+  trackIds: string[]
+): Promise<void> {
+  if (trackIds.length === 0) return;
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    for (const trackId of trackIds) {
+      await db.runAsync(
+        'DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?',
+        [playlistId, trackId]
+      );
+    }
+  });
+}
+
+export async function reorderPlaylistTracks(
+  playlistId: string,
+  orderedTrackIds: string[]
+): Promise<void> {
+  if (orderedTrackIds.length === 0) return;
+  const db = await getDatabase();
+  await db.withTransactionAsync(async () => {
+    for (let i = 0; i < orderedTrackIds.length; i++) {
+      await db.runAsync(
+        'UPDATE playlist_tracks SET sort_order = ?, position = ? WHERE playlist_id = ? AND track_id = ?',
+        [i, i, playlistId, orderedTrackIds[i]]
+      );
+    }
+  });
 }
 
 export async function getPlaylistTracks(playlistId: string): Promise<Track[]> {
@@ -387,6 +467,26 @@ export async function getPlaylistsContainingTrack(trackId: string): Promise<stri
     [trackId]
   );
   return rows.map((r) => r.playlist_id);
+}
+
+export async function getPlaylistsMembershipForTracks(
+  trackIds: string[]
+): Promise<Record<string, number>> {
+  if (trackIds.length === 0) return {};
+  const db = await getDatabase();
+  const placeholders = trackIds.map(() => '?').join(',');
+  const rows = await db.getAllAsync<{ playlist_id: string; count: number }>(
+    `SELECT playlist_id, COUNT(track_id) as count
+     FROM playlist_tracks
+     WHERE track_id IN (${placeholders})
+     GROUP BY playlist_id`,
+    trackIds
+  );
+  const result: Record<string, number> = {};
+  for (const r of rows) {
+    result[r.playlist_id] = r.count;
+  }
+  return result;
 }
 
 export async function upsertPlaylistTrack(

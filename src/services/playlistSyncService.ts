@@ -16,6 +16,7 @@ import {
   getAllPlaylistTracksRaw,
   addTrackToPlaylist,
   getSetting,
+  setSetting,
 } from '@/lib/database';
 import { useSyncProgressStore } from '@/store/syncProgressStore';
 
@@ -27,6 +28,8 @@ export interface SharedPlaylistData {
   created_at: string;
   tracks: Track[];
   is_public?: boolean;
+  likes_count?: number;
+  is_liked?: boolean;
 }
 
 export interface SharePlaylistResult {
@@ -303,6 +306,46 @@ export async function runAutoDownloadSync(): Promise<void> {
 }
 
 /**
+ * Upload a local playlist cover image to Supabase Storage ('playlist-covers').
+ * Returns the public URL with a cache-buster timestamp.
+ */
+export async function uploadPlaylistCoverToCloud(
+  playlistId: string,
+  localUri: string
+): Promise<string | null> {
+  if (!localUri) return null;
+  if (localUri.startsWith('http://') || localUri.startsWith('https://')) {
+    return localUri;
+  }
+
+  try {
+    const response = await fetch(localUri);
+    const arrayBuffer = await response.arrayBuffer();
+    const filePath = `${playlistId}.jpg`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from('playlist-covers')
+      .upload(filePath, arrayBuffer, {
+        contentType: 'image/jpeg',
+        upsert: true,
+      });
+
+    if (uploadErr) {
+      console.warn('[UploadPlaylistCover] Storage upload error:', uploadErr.message);
+      return null;
+    }
+
+    const { data } = supabase.storage.from('playlist-covers').getPublicUrl(filePath);
+    if (!data?.publicUrl) return null;
+
+    return `${data.publicUrl}?t=${Date.now()}`;
+  } catch (err) {
+    console.warn('[UploadPlaylistCover] Failed to upload cover:', err);
+    return null;
+  }
+}
+
+/**
  * Generate a share code for a playlist, upload it and its tracks to Supabase,
  * and copy the shareable deep link (jstream://playlist/JST-XXXX) to clipboard.
  */
@@ -372,18 +415,22 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
       }
     }
 
-    // 4. Upsert playlist to Supabase user_playlists with share_code
+    // 4. Upload playlist cover to Supabase Storage if present and upsert to user_playlists
+    let cloudCoverUrl: string | null = null;
+    if (target.cover_uri) {
+      if (target.cover_uri.startsWith('http://') || target.cover_uri.startsWith('https://')) {
+        cloudCoverUrl = target.cover_uri;
+      } else {
+        cloudCoverUrl = await uploadPlaylistCoverToCloud(target.id, target.cover_uri);
+      }
+    }
+
     const { error: plError } = await supabase.from('user_playlists').upsert(
       {
         id: target.id,
         user_id: userId,
         name: target.name,
-        cover_url:
-          target.cover_uri &&
-          !target.cover_uri.startsWith('file://') &&
-          !target.cover_uri.startsWith('content://')
-            ? target.cover_uri
-            : null,
+        cover_url: cloudCoverUrl,
         share_code: shareCode,
         is_public: target.is_public === 1,
         updated_at: new Date().toISOString(),
@@ -508,15 +555,41 @@ export async function togglePlaylistPublic(
 }
 
 /**
- * Fetch public community playlists for discovery.
+ * Helper to get active user ID or persistent local guest device ID for liking.
+ */
+export async function getCurrentUserOrDeviceId(): Promise<string> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (session?.user?.id) return session.user.id;
+  } catch {
+    // ignore
+  }
+
+  try {
+    let deviceId = await getSetting('device_client_id');
+    if (!deviceId) {
+      deviceId = 'dev_' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+      await setSetting('device_client_id', deviceId);
+    }
+    return deviceId;
+  } catch {
+    return 'guest_device';
+  }
+}
+
+/**
+ * Fetch public community playlists for discovery sorted by most hearts first.
  */
 export async function fetchPublicPlaylists(limit = 30): Promise<SharedPlaylistData[]> {
   try {
     const { data: playlists, error } = await supabase
       .from('user_playlists')
-      .select('id, name, cover_url, share_code, created_at, is_public')
+      .select('id, name, cover_url, share_code, created_at, is_public, likes_count')
       .eq('is_public', true)
       .not('share_code', 'is', null)
+      .order('likes_count', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(limit);
 
@@ -527,6 +600,21 @@ export async function fetchPublicPlaylists(limit = 30): Promise<SharedPlaylistDa
 
     const playlistIds = playlists.map((p) => p.id);
     if (playlistIds.length === 0) return [];
+
+    const currentUserId = await getCurrentUserOrDeviceId();
+    let likedSet = new Set<string>();
+    try {
+      const { data: userLikes } = await supabase
+        .from('user_playlist_likes')
+        .select('playlist_id')
+        .eq('user_id', currentUserId)
+        .in('playlist_id', playlistIds);
+      if (userLikes) {
+        likedSet = new Set(userLikes.map((l) => l.playlist_id));
+      }
+    } catch {
+      // ignore
+    }
 
     const { data: ptRows } = await supabase
       .from('user_playlist_tracks')
@@ -584,6 +672,8 @@ export async function fetchPublicPlaylists(limit = 30): Promise<SharedPlaylistDa
         created_at: pl.created_at,
         tracks: plTracks,
         is_public: true,
+        likes_count: pl.likes_count || 0,
+        is_liked: likedSet.has(pl.id),
       });
     }
 
@@ -604,7 +694,7 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
   // 1. Fetch playlist metadata
   const { data: playlist, error: pError } = await supabase
     .from('user_playlists')
-    .select('id, name, cover_url, share_code, created_at, is_public')
+    .select('id, name, cover_url, share_code, created_at, is_public, likes_count')
     .eq('share_code', code)
     .maybeSingle();
 
@@ -678,6 +768,20 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
     tracks = resultTracks;
   }
 
+  const currentUserId = await getCurrentUserOrDeviceId();
+  let isLiked = false;
+  try {
+    const { data: likeRow } = await supabase
+      .from('user_playlist_likes')
+      .select('playlist_id')
+      .eq('playlist_id', playlist.id)
+      .eq('user_id', currentUserId)
+      .maybeSingle();
+    isLiked = Boolean(likeRow);
+  } catch {
+    // ignore
+  }
+
   return {
     id: playlist.id,
     name: playlist.name,
@@ -686,7 +790,68 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
     created_at: playlist.created_at,
     tracks,
     is_public: Boolean(playlist.is_public),
+    likes_count: playlist.likes_count || 0,
+    is_liked: isLiked,
   };
+}
+
+/**
+ * Toggle like/heart on a public/shared playlist in Supabase.
+ * Returns the updated { liked, likes_count }.
+ */
+export async function togglePlaylistLike(
+  playlistId: string,
+  currentlyLiked: boolean
+): Promise<{ liked: boolean; likes_count: number }> {
+  try {
+    const currentUserId = await getCurrentUserOrDeviceId();
+    const shouldLike = !currentlyLiked;
+
+    if (shouldLike) {
+      const { error: insertErr } = await supabase.from('user_playlist_likes').insert({
+        playlist_id: playlistId,
+        user_id: currentUserId,
+        created_at: new Date().toISOString(),
+      });
+
+      if (insertErr && !insertErr.message?.includes('duplicate')) {
+        console.warn('Error liking playlist in Supabase:', insertErr.message);
+      }
+    } else {
+      const { error: delErr } = await supabase
+        .from('user_playlist_likes')
+        .delete()
+        .eq('playlist_id', playlistId)
+        .eq('user_id', currentUserId);
+
+      if (delErr) {
+        console.warn('Error unliking playlist in Supabase:', delErr.message);
+      }
+    }
+
+    const { data: updatedPl } = await supabase
+      .from('user_playlists')
+      .select('likes_count')
+      .eq('id', playlistId)
+      .maybeSingle();
+
+    const fallbackCount = shouldLike ? 1 : 0;
+    const count =
+      updatedPl?.likes_count !== undefined && updatedPl?.likes_count !== null
+        ? updatedPl.likes_count
+        : fallbackCount;
+
+    return {
+      liked: shouldLike,
+      likes_count: Math.max(0, count),
+    };
+  } catch (err) {
+    console.warn('Error in togglePlaylistLike:', err);
+    return {
+      liked: !currentlyLiked,
+      likes_count: currentlyLiked ? 0 : 1,
+    };
+  }
 }
 
 /**
@@ -698,9 +863,15 @@ export async function importSharedPlaylist(
   shared: SharedPlaylistData
 ): Promise<Playlist> {
   // 1. Create a new local playlist (or recreate with custom name)
+  const resolvedCover =
+    shared.cover_url ||
+    (shared.tracks.length > 0 && shared.tracks[0].local_artwork_uri
+      ? shared.tracks[0].local_artwork_uri
+      : null);
+
   const localPlaylist = await createPlaylist(
     shared.name,
-    shared.cover_url,
+    resolvedCover,
     shared.share_code,
     undefined,
     'local_guest',

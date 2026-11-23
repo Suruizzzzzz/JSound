@@ -22,6 +22,7 @@ import {
   importSharedPlaylist,
   fetchPublicPlaylists,
   normalizeShareCode,
+  togglePlaylistLike,
   SharedPlaylistData,
 } from '@/services/playlistSyncService';
 import { downloadTrackToOfflineLibrary, OnlineTrackResult } from '@/services/musicDownloadService';
@@ -68,6 +69,7 @@ export default function ImportPlaylistModal({
   // Community Playlists Discovery
   const [communityPlaylists, setCommunityPlaylists] = useState<SharedPlaylistData[]>([]);
   const [isLoadingCommunity, setIsLoadingCommunity] = useState(false);
+  const [communitySort, setCommunitySort] = useState<'top' | 'newest'>('top');
 
   const cleanBadge = useMemo(() => {
     const raw = importCodeInput.trim();
@@ -75,6 +77,57 @@ export default function ImportPlaylistModal({
     const norm = normalizeShareCode(raw);
     return norm.startsWith('JST-') && norm.length === 8 ? norm : null;
   }, [importCodeInput]);
+
+  const handleToggleLike = async (item: SharedPlaylistData) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const currentlyLiked = Boolean(item.is_liked);
+    const nextLiked = !currentlyLiked;
+    const nextCount = Math.max(0, (item.likes_count ?? 0) + (nextLiked ? 1 : -1));
+
+    // Optimistic UI updates
+    setCommunityPlaylists((prev) =>
+      prev.map((p) =>
+        p.id === item.id ? { ...p, is_liked: nextLiked, likes_count: nextCount } : p
+      )
+    );
+
+    setSharedPreview((prev) =>
+      prev && prev.id === item.id
+        ? { ...prev, is_liked: nextLiked, likes_count: nextCount }
+        : prev
+    );
+
+    try {
+      const res = await togglePlaylistLike(item.id, currentlyLiked);
+      setCommunityPlaylists((prev) =>
+        prev.map((p) =>
+          p.id === item.id ? { ...p, is_liked: res.liked, likes_count: res.likes_count } : p
+        )
+      );
+      setSharedPreview((prev) =>
+        prev && prev.id === item.id
+          ? { ...prev, is_liked: res.liked, likes_count: res.likes_count }
+          : prev
+      );
+    } catch (err) {
+      console.warn('Failed to toggle like:', err);
+    }
+  };
+
+  const sortedCommunityPlaylists = useMemo(() => {
+    const lists = [...communityPlaylists];
+    if (communitySort === 'top') {
+      return lists.sort((a, b) => {
+        const diff = (b.likes_count ?? 0) - (a.likes_count ?? 0);
+        if (diff !== 0) return diff;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+    } else {
+      return lists.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    }
+  }, [communityPlaylists, communitySort]);
 
   // Load community playlists when switching to community tab or when modal opens
   const loadCommunityPlaylists = useCallback(async () => {
@@ -427,6 +480,12 @@ export default function ImportPlaylistModal({
                           style={styles.previewCoverImage}
                           resizeMode="cover"
                         />
+                      ) : sharedPreview.tracks.length > 0 && sharedPreview.tracks[0].local_artwork_uri ? (
+                        <Image
+                          source={{ uri: sharedPreview.tracks[0].local_artwork_uri }}
+                          style={styles.previewCoverImage}
+                          resizeMode="cover"
+                        />
                       ) : (
                         <Ionicons name="albums-outline" size={22} color={theme.textSecondary} />
                       )}
@@ -444,6 +503,26 @@ export default function ImportPlaylistModal({
                         <View style={styles.codeBadge}>
                           <Text style={styles.codeBadgeText}>{sharedPreview.share_code}</Text>
                         </View>
+                        <TouchableOpacity
+                          style={styles.previewHeartBtn}
+                          onPress={() => handleToggleLike(sharedPreview)}
+                          activeOpacity={0.7}
+                          accessibilityLabel="Like playlist"
+                        >
+                          <Ionicons
+                            name={sharedPreview.is_liked ? 'heart' : 'heart-outline'}
+                            size={13}
+                            color={sharedPreview.is_liked ? '#FF3B30' : theme.textSecondary}
+                          />
+                          <Text
+                            style={[
+                              styles.previewHeartText,
+                              sharedPreview.is_liked && styles.previewHeartTextActive,
+                            ]}
+                          >
+                            {sharedPreview.likes_count ?? 0}
+                          </Text>
+                        </TouchableOpacity>
                       </View>
                     </View>
                   </View>
@@ -524,66 +603,184 @@ export default function ImportPlaylistModal({
 
           {/* TAB 2: COMMUNITY PLAYLISTS DISCOVERY */}
           {activeTab === 'community' && (
-            <ScrollView style={styles.communityList} showsVerticalScrollIndicator={false}>
-              {isLoadingCommunity ? (
-                <View style={{ paddingVertical: 30, alignItems: 'center' }}>
-                  <ActivityIndicator size="small" color={theme.primary} />
-                  <Text style={{ marginTop: 8, fontSize: 12, color: theme.textSecondary }}>
-                    Loading community playlists...
-                  </Text>
-                </View>
-              ) : communityPlaylists.length === 0 ? (
-                <Text style={styles.emptyCommunityText}>
-                  No public community playlists discovered yet. Be the first to publish one!
-                </Text>
-              ) : (
-                communityPlaylists.map((pl) => (
+            <>
+              {/* Sort Filter Toggle Row */}
+              <View style={styles.communityFilterRow}>
+                <Text style={styles.communityFilterLabel}>Order:</Text>
+                <View style={styles.communityFilterButtons}>
                   <TouchableOpacity
-                    key={pl.id}
-                    style={styles.communityCard}
-                    onPress={() => handleSelectCommunityPlaylist(pl)}
+                    style={[
+                      styles.communityFilterBtn,
+                      communitySort === 'top' && styles.communityFilterBtnActive,
+                    ]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setCommunitySort('top');
+                    }}
                     activeOpacity={0.7}
                   >
-                    <View style={styles.communityCover}>
-                      {pl.cover_url ? (
-                        <Image
-                          source={{ uri: pl.cover_url }}
-                          style={styles.communityCoverImage}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Ionicons name="albums-outline" size={20} color={theme.textSecondary} />
-                      )}
-                    </View>
-
-                    <View style={styles.communityInfo}>
-                      <Text style={styles.communityTitle} numberOfLines={1}>
-                        {pl.name}
-                      </Text>
-                      <Text style={styles.communityMeta}>
-                        {pl.tracks.length} song{pl.tracks.length === 1 ? '' : 's'} • {pl.share_code}
-                      </Text>
-                    </View>
-
-                    <TouchableOpacity
-                      style={styles.communityImportBtn}
-                      onPress={() => handleSelectCommunityPlaylist(pl)}
-                      activeOpacity={0.8}
+                    <Ionicons
+                      name="flame"
+                      size={12}
+                      color={communitySort === 'top' ? theme.primary : theme.textSecondary}
+                    />
+                    <Text
+                      style={[
+                        styles.communityFilterBtnText,
+                        communitySort === 'top' && styles.communityFilterBtnTextActive,
+                      ]}
                     >
-                      <Ionicons name="cloud-download-outline" size={13} color={theme.textPrimary} />
-                      <Text style={styles.communityImportBtnText}>Preview</Text>
-                    </TouchableOpacity>
+                      Top Recommended
+                    </Text>
                   </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.communityFilterBtn,
+                      communitySort === 'newest' && styles.communityFilterBtnActive,
+                    ]}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setCommunitySort('newest');
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name="time-outline"
+                      size={12}
+                      color={communitySort === 'newest' ? theme.primary : theme.textSecondary}
+                    />
+                    <Text
+                      style={[
+                        styles.communityFilterBtnText,
+                        communitySort === 'newest' && styles.communityFilterBtnTextActive,
+                      ]}
+                    >
+                      Newest
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <ScrollView style={styles.communityList} showsVerticalScrollIndicator={false}>
+                {isLoadingCommunity ? (
+                  <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color={theme.primary} />
+                    <Text style={{ marginTop: 8, fontSize: 12, color: theme.textSecondary }}>
+                      Loading community playlists...
+                    </Text>
+                  </View>
+                ) : sortedCommunityPlaylists.length === 0 ? (
+                  <Text style={styles.emptyCommunityText}>
+                    No public community playlists discovered yet. Be the first to publish one!
+                  </Text>
+                ) : (
+                  sortedCommunityPlaylists.map((pl, index) => {
+                    const isTop1 = index === 0 && (pl.likes_count ?? 0) > 0;
+                    const isTop2 = index === 1 && (pl.likes_count ?? 0) > 0;
+                    const isTop3 = index === 2 && (pl.likes_count ?? 0) > 0;
+
+                    return (
+                      <TouchableOpacity
+                        key={pl.id}
+                        style={styles.communityCard}
+                        onPress={() => handleSelectCommunityPlaylist(pl)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.communityCover}>
+                          {pl.cover_url ? (
+                            <Image
+                              source={{ uri: pl.cover_url }}
+                              style={styles.communityCoverImage}
+                              resizeMode="cover"
+                            />
+                          ) : pl.tracks.length > 0 && pl.tracks[0].local_artwork_uri ? (
+                            <Image
+                              source={{ uri: pl.tracks[0].local_artwork_uri }}
+                              style={styles.communityCoverImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="albums-outline" size={20} color={theme.textSecondary} />
+                          )}
+                        </View>
+
+                        <View style={styles.communityInfo}>
+                          <View style={styles.communityTitleRow}>
+                            {isTop1 && (
+                              <View style={[styles.rankBadge, styles.rankBadgeTop1]}>
+                                <Text style={[styles.rankBadgeText, styles.rankBadgeTextTop1]}>
+                                  TOP #1
+                                </Text>
+                              </View>
+                            )}
+                            {isTop2 && (
+                              <View style={[styles.rankBadge, styles.rankBadgeTop2]}>
+                                <Text style={[styles.rankBadgeText, styles.rankBadgeTextTop2]}>
+                                  TOP #2
+                                </Text>
+                              </View>
+                            )}
+                            {isTop3 && (
+                              <View style={[styles.rankBadge, styles.rankBadgeTop3]}>
+                                <Text style={[styles.rankBadgeText, styles.rankBadgeTextTop3]}>
+                                  TOP #3
+                                </Text>
+                              </View>
+                            )}
+                            <Text style={styles.communityTitle} numberOfLines={1}>
+                              {pl.name}
+                            </Text>
+                          </View>
+                          <Text style={styles.communityMeta}>
+                            {pl.tracks.length} song{pl.tracks.length === 1 ? '' : 's'} • {pl.share_code}
+                          </Text>
+                        </View>
+
+                        <View style={styles.communityActionsRow}>
+                          <TouchableOpacity
+                            style={styles.communityHeartBtn}
+                            onPress={() => handleToggleLike(pl)}
+                            activeOpacity={0.7}
+                            accessibilityLabel="Like playlist"
+                          >
+                            <Ionicons
+                              name={pl.is_liked ? 'heart' : 'heart-outline'}
+                              size={13}
+                              color={pl.is_liked ? '#FF3B30' : theme.textSecondary}
+                            />
+                            <Text
+                              style={[
+                                styles.communityHeartText,
+                                pl.is_liked && styles.communityHeartTextActive,
+                              ]}
+                            >
+                              {pl.likes_count ?? 0}
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={styles.communityImportBtn}
+                            onPress={() => handleSelectCommunityPlaylist(pl)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="cloud-download-outline" size={13} color={theme.textPrimary} />
+                            <Text style={styles.communityImportBtnText}>Preview</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
+              </ScrollView>
+            </>
           )}
 
           {/* Footer Action Buttons */}
           <View style={styles.modalButtons}>
             <TouchableOpacity
               style={styles.modalCancelBtn}
-              onPress={onClose}
+              onPress={handleClose}
               disabled={isDownloadingShared || isImportingShared}
               activeOpacity={0.7}
             >

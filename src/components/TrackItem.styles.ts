@@ -14,11 +14,18 @@ export const createStyles = (theme: ThemeColors) =>
     },
     activeContainer: {
       backgroundColor: theme.surfaceElevated,
+      borderLeftWidth: 3.5,
+      borderLeftColor: theme.primary,
+      paddingLeft: 12.5,
     },
     selectedContainer: {
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.primary + '55',
+    },
+    selectedActiveContainer: {
+      borderWidth: 1.5,
+      borderColor: theme.primary,
     },
     selectionCheckbox: {
       marginRight: 10,
@@ -33,6 +40,20 @@ export const createStyles = (theme: ThemeColors) =>
       borderWidth: 1,
       backgroundColor: theme.surfaceElevated,
       borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    activeArtworkContainer: {
+      borderColor: theme.primary + '88',
+    },
+    nowPlayingArtworkBadge: {
+      position: 'absolute',
+      bottom: 2,
+      right: 2,
+      backgroundColor: theme.primary,
+      borderRadius: 4,
+      paddingHorizontal: 3,
+      paddingVertical: 2,
       justifyContent: 'center',
       alignItems: 'center',
     },
@@ -52,14 +73,35 @@ export const createStyles = (theme: ThemeColors) =>
       marginLeft: 12,
       marginRight: 8,
     },
+    titleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
     title: {
       fontSize: 15,
       fontWeight: '500',
       color: theme.textPrimary,
+      flexShrink: 1,
     },
     activeTitle: {
       fontWeight: '700',
       color: theme.primary,
+    },
+    nowPlayingTitleBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+      backgroundColor: theme.primary + '18',
+    },
+    nowPlayingTitleBadgeText: {
+      fontSize: 9.5,
+      fontWeight: '800',
+      color: theme.primary,
+      letterSpacing: 0.5,
     },
     metaRow: {
       flexDirection: 'row',

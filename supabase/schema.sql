@@ -61,6 +61,7 @@ create table if not exists public.user_playlists (
   cover_url text,
   share_code text unique,
   is_public boolean default false,
+  likes_count integer not null default 0,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -81,6 +82,41 @@ create table if not exists public.user_playlist_tracks (
 
 create index if not exists idx_user_playlist_tracks_playlist on public.user_playlist_tracks(playlist_id);
 
+-- 5. User Playlist Likes Table
+create table if not exists public.user_playlist_likes (
+  playlist_id text references public.user_playlists(id) on delete cascade not null,
+  user_id text not null,
+  created_at timestamptz default now(),
+  primary key (playlist_id, user_id)
+);
+
+create index if not exists idx_user_playlist_likes_playlist on public.user_playlist_likes(playlist_id);
+create index if not exists idx_user_playlist_likes_user on public.user_playlist_likes(user_id);
+
+-- Trigger function to automatically maintain likes_count on user_playlists
+create or replace function public.handle_playlist_like_change()
+returns trigger as $$
+begin
+  if (TG_OP = 'INSERT') then
+    update public.user_playlists
+    set likes_count = coalesce(likes_count, 0) + 1
+    where id = new.playlist_id;
+    return new;
+  elsif (TG_OP = 'DELETE') then
+    update public.user_playlists
+    set likes_count = greatest(0, coalesce(likes_count, 0) - 1)
+    where id = old.playlist_id;
+    return old;
+  end if;
+  return null;
+end;
+$$ language plpgsql security definer;
+
+drop trigger if exists on_playlist_like_change on public.user_playlist_likes;
+create trigger on_playlist_like_change
+  after insert or delete on public.user_playlist_likes
+  for each row execute procedure public.handle_playlist_like_change();
+
 -- ==============================================================================
 -- Row-Level Security (RLS) Configuration
 -- ==============================================================================
@@ -90,6 +126,7 @@ alter table public.profiles enable row level security;
 alter table public.user_tracks enable row level security;
 alter table public.user_playlists enable row level security;
 alter table public.user_playlist_tracks enable row level security;
+alter table public.user_playlist_likes enable row level security;
 
 -- Profiles Policies
 drop policy if exists "Users can view own profile" on public.profiles;
@@ -190,6 +227,22 @@ create policy "Users can delete own playlist tracks"
   on public.user_playlist_tracks for delete
   using (auth.uid() = user_id);
 
+-- User Playlist Likes Policies
+drop policy if exists "Anyone can select playlist likes" on public.user_playlist_likes;
+create policy "Anyone can select playlist likes"
+  on public.user_playlist_likes for select
+  using (true);
+
+drop policy if exists "Users can insert playlist likes" on public.user_playlist_likes;
+create policy "Users can insert playlist likes"
+  on public.user_playlist_likes for insert
+  with check (true);
+
+drop policy if exists "Users can delete own playlist likes" on public.user_playlist_likes;
+create policy "Users can delete own playlist likes"
+  on public.user_playlist_likes for delete
+  using (true);
+
 -- ==============================================================================
 -- 5. Supabase Storage: User Avatars Bucket
 -- ==============================================================================
@@ -217,3 +270,31 @@ drop policy if exists "Users can delete own avatar" on storage.objects;
 create policy "Users can delete own avatar"
   on storage.objects for delete
   using (bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]);
+
+-- ==============================================================================
+-- 6. Supabase Storage: Playlist Covers Bucket
+-- ==============================================================================
+
+insert into storage.buckets (id, name, public)
+values ('playlist-covers', 'playlist-covers', true)
+on conflict (id) do nothing;
+
+drop policy if exists "Playlist covers are publicly accessible" on storage.objects;
+create policy "Playlist covers are publicly accessible"
+  on storage.objects for select
+  using (bucket_id = 'playlist-covers');
+
+drop policy if exists "Users can upload playlist covers" on storage.objects;
+create policy "Users can upload playlist covers"
+  on storage.objects for insert
+  with check (bucket_id = 'playlist-covers');
+
+drop policy if exists "Users can update playlist covers" on storage.objects;
+create policy "Users can update playlist covers"
+  on storage.objects for update
+  using (bucket_id = 'playlist-covers');
+
+drop policy if exists "Users can delete playlist covers" on storage.objects;
+create policy "Users can delete playlist covers"
+  on storage.objects for delete
+  using (bucket_id = 'playlist-covers');

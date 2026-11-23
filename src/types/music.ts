@@ -20,13 +20,28 @@ export interface Playlist {
   user_id: string;
   name: string;
   cover_uri?: string | null;
+  cover_url?: string | null;
   share_code?: string | null;
   sync_status?: string | null;
   sync_version?: number;
   is_synced: number; // 0 or 1
   is_public?: number; // 0 or 1
+  likes_count?: number;
+  is_liked?: boolean;
   created_at: string;
   track_count?: number;
+}
+
+export interface SharedPlaylistData {
+  id: string;
+  name: string;
+  cover_url: string | null;
+  share_code: string;
+  created_at: string;
+  tracks: Track[];
+  is_public?: boolean;
+  likes_count?: number;
+  is_liked?: boolean;
 }
 
 export interface PlaylistTrack {

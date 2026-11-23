@@ -31,9 +31,13 @@ import {
   updatePlaylistName,
   updatePlaylistCover,
   addTrackToPlaylist,
+  addTracksToPlaylist,
   removeTrackFromPlaylist,
+  removeTracksFromPlaylist,
+  reorderPlaylistTracks,
   getPlaylistTracks,
   getPlaylistsContainingTrack,
+  getPlaylistsMembershipForTracks,
   getSetting,
   setSetting,
 } from '@/lib/database';
@@ -83,6 +87,7 @@ export default function LibraryScreen() {
   const removeTrackFromStore = usePlayerStore((state) => state.removeTrack);
   const playTrack = usePlayerStore((state) => state.playTrack);
   const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
 
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
@@ -199,6 +204,7 @@ export default function LibraryScreen() {
   const [showBatchAddToPlaylistModal, setShowBatchAddToPlaylistModal] = useState(false);
   const [showAddSongsToPlaylistModal, setShowAddSongsToPlaylistModal] = useState(false);
   const [selectedAddSongIds, setSelectedAddSongIds] = useState<Set<string>>(new Set());
+  const [playlistMembershipMap, setPlaylistMembershipMap] = useState<Record<string, number>>({});
   const [sortChoice, setSortChoice] = useState<SortChoice>('last_download');
   const [showSortModal, setShowSortModal] = useState(false);
 
@@ -258,6 +264,10 @@ export default function LibraryScreen() {
     message: '',
     onConfirm: () => {},
   });
+
+  const listBottomPadding = useMemo(() => {
+    return (currentTrack ? 76 : 0) + (selectionMode ? 76 : 0) + 100;
+  }, [currentTrack, selectionMode]);
 
   // Sort helper function
   const applySort = useCallback((list: Track[], choice: SortChoice): Track[] => {
@@ -589,6 +599,27 @@ export default function LibraryScreen() {
     await reorderTracks(updated);
   };
 
+  const handleMovePlaylistTrack = async (fromIndex: number, toIndex: number) => {
+    if (
+      !selectedPlaylist ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= selectedPlaylistTracks.length ||
+      toIndex >= selectedPlaylistTracks.length ||
+      fromIndex === toIndex
+    )
+      return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const updated = [...selectedPlaylistTracks];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    setSelectedPlaylistTracks(updated);
+    await reorderPlaylistTracks(selectedPlaylist.id, updated.map((t) => t.id));
+    if (selectedPlaylist.share_code) {
+      syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+    }
+  };
+
   const handleRowLongPress = useCallback((trackId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     setSelectionMode(true);
@@ -622,6 +653,19 @@ export default function LibraryScreen() {
       setSelectedTrackIds(new Set(tracks.map((t) => t.id)));
     }
   }, [isAllSelected, tracks]);
+
+  const isAllPlaylistTracksSelected =
+    selectedPlaylistTracks.length > 0 &&
+    selectedPlaylistTracks.every((t) => selectedTrackIds.has(t.id));
+
+  const handleToggleSelectAllPlaylistTracks = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isAllPlaylistTracksSelected) {
+      setSelectedTrackIds(new Set());
+    } else {
+      setSelectedTrackIds(new Set(selectedPlaylistTracks.map((t) => t.id)));
+    }
+  }, [isAllPlaylistTracksSelected, selectedPlaylistTracks]);
 
   const handleExitSelectionMode = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -658,18 +702,52 @@ export default function LibraryScreen() {
     });
   };
 
+  const handleBatchRemoveFromPlaylistConfirm = () => {
+    if (!selectedPlaylist || selectedTrackIds.size === 0) return;
+    const count = selectedTrackIds.size;
+    setConfirmConfig({
+      visible: true,
+      title: 'Remove from Playlist',
+      message: `Remove ${count} song${count === 1 ? '' : 's'} from "${selectedPlaylist.name}"? They will remain in your All Songs library.`,
+      icon: 'remove-circle-outline',
+      confirmText: `Remove ${count} Song${count === 1 ? '' : 's'}`,
+      cancelText: 'Cancel',
+      isDestructive: true,
+      onConfirm: async () => {
+        setConfirmConfig((prev) => ({ ...prev, visible: false }));
+        try {
+          const idsToRemove = Array.from(selectedTrackIds);
+          await removeTracksFromPlaylist(selectedPlaylist.id, idsToRemove);
+          const updated = selectedPlaylistTracks.filter((t) => !selectedTrackIds.has(t.id));
+          setSelectedPlaylistTracks(updated);
+          await loadPlaylists();
+          handleExitSelectionMode();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          if (selectedPlaylist.share_code) {
+            syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+          }
+        } catch (e) {
+          console.warn('Failed to batch remove tracks from playlist:', e);
+        }
+      },
+    });
+  };
+
+  const handleOpenBatchAddToPlaylistModal = async () => {
+    try {
+      const ids = Array.from(selectedTrackIds);
+      const membership = await getPlaylistsMembershipForTracks(ids);
+      setPlaylistMembershipMap(membership);
+    } catch {
+      setPlaylistMembershipMap({});
+    }
+    setShowBatchAddToPlaylistModal(true);
+  };
+
   const handleBatchAddTracksToPlaylist = async (playlist: Playlist) => {
     try {
       const idsToAdd = Array.from(selectedTrackIds);
-      let addedCount = 0;
-      for (const trackId of idsToAdd) {
-        try {
-          await addTrackToPlaylist(playlist.id, trackId);
-          addedCount++;
-        } catch {
-          // Track already in playlist, continue
-        }
-      }
+      const addedCount = await addTracksToPlaylist(playlist.id, idsToAdd);
       await loadPlaylists();
       setShowBatchAddToPlaylistModal(false);
       handleExitSelectionMode();
@@ -681,7 +759,9 @@ export default function LibraryScreen() {
       }
 
       setScanMessage(
-        `Added ${addedCount} song${addedCount === 1 ? '' : 's'} to "${playlist.name}"`
+        addedCount > 0
+          ? `Added ${addedCount} song${addedCount === 1 ? '' : 's'} to "${playlist.name}"`
+          : `All selected songs are already in "${playlist.name}"`
       );
     } catch (e) {
       console.warn('Failed to batch add tracks to playlist:', e);
@@ -689,15 +769,15 @@ export default function LibraryScreen() {
   };
 
   // Add Songs to Playlist Modal Helpers (inside Playlist Detail)
-  const availableSongsForPlaylist = useMemo(() => {
+  const unaddedSongsForPlaylist = useMemo(() => {
     if (!selectedPlaylist) return [];
     const existingIds = new Set(selectedPlaylistTracks.map((t) => t.id));
     return tracks.filter((t) => !existingIds.has(t.id));
   }, [tracks, selectedPlaylist, selectedPlaylistTracks]);
 
   const isAllAddSongsSelected =
-    availableSongsForPlaylist.length > 0 &&
-    selectedAddSongIds.size === availableSongsForPlaylist.length;
+    unaddedSongsForPlaylist.length > 0 &&
+    selectedAddSongIds.size === unaddedSongsForPlaylist.length;
 
   const handleOpenAddSongsModal = () => {
     if (!selectedPlaylist) return;
@@ -723,7 +803,7 @@ export default function LibraryScreen() {
     if (isAllAddSongsSelected) {
       setSelectedAddSongIds(new Set());
     } else {
-      setSelectedAddSongIds(new Set(availableSongsForPlaylist.map((t) => t.id)));
+      setSelectedAddSongIds(new Set(unaddedSongsForPlaylist.map((t) => t.id)));
     }
   };
 
@@ -731,13 +811,7 @@ export default function LibraryScreen() {
     if (!selectedPlaylist || selectedAddSongIds.size === 0) return;
     try {
       const idsToAdd = Array.from(selectedAddSongIds);
-      for (const trackId of idsToAdd) {
-        try {
-          await addTrackToPlaylist(selectedPlaylist.id, trackId);
-        } catch {
-          // ignore duplicate
-        }
-      }
+      await addTracksToPlaylist(selectedPlaylist.id, idsToAdd);
       const updated = await getPlaylistTracks(selectedPlaylist.id);
       setSelectedPlaylistTracks(updated);
       await loadPlaylists();
@@ -1009,6 +1083,9 @@ export default function LibraryScreen() {
           setSelectedPlaylist((prev) => (prev ? { ...prev, cover_uri: targetUri } : null));
           await loadPlaylists();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          if (selectedPlaylist.share_code) {
+            syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+          }
         }
       }
     } catch (e) {
@@ -1034,6 +1111,9 @@ export default function LibraryScreen() {
       setSelectedPlaylist((prev) => (prev ? { ...prev, cover_uri: null } : null));
       await loadPlaylists();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (selectedPlaylist.share_code) {
+        syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+      }
     } catch (e) {
       console.warn('Failed to remove playlist cover:', e);
     }
@@ -1057,22 +1137,17 @@ export default function LibraryScreen() {
     if (!trackToAddToPlaylist) return;
 
     const isAssigned = assignedPlaylistIds.includes(playlistId);
+    if (isAssigned) return;
     try {
-      if (isAssigned) {
-        await removeTrackFromPlaylist(playlistId, trackToAddToPlaylist.id);
-        setAssignedPlaylistIds((prev) => prev.filter((id) => id !== playlistId));
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      } else {
-        await addTrackToPlaylist(playlistId, trackToAddToPlaylist.id);
-        setAssignedPlaylistIds((prev) => [...prev, playlistId]);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
+      await addTrackToPlaylist(playlistId, trackToAddToPlaylist.id);
+      setAssignedPlaylistIds((prev) => [...prev, playlistId]);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       await loadPlaylists();
 
       // Automatically re-sync cloud playlist in background if already shared
       syncSharedPlaylistTracks(playlistId).catch(() => {});
     } catch (e) {
-      console.warn('Failed to toggle track in playlist:', e);
+      console.warn('Failed to add track to playlist:', e);
     }
   };
 
@@ -1242,26 +1317,28 @@ export default function LibraryScreen() {
   // -------------------------------------------------------------
 
   const renderPlaylistsHeader = () => (
-    <View style={styles.playlistHeaderRow}>
-      <View>
+    <View style={styles.playlistHeaderContainer}>
+      {/* Row 1: Title on left, subtitle aligned cleanly on right */}
+      <View style={styles.playlistTitleRow}>
         <Text style={styles.libraryTitle}>Playlists</Text>
         <Text style={styles.trackCountText}>
           {playlists.length} custom collection{playlists.length === 1 ? '' : 's'}
         </Text>
       </View>
 
-      <View style={styles.playlistHeaderActions}>
+      {/* Row 2: Full-width action row with equal-width pill buttons */}
+      <View style={styles.playlistActionRow}>
         <TouchableOpacity
-          style={styles.importPlaylistButton}
+          style={styles.importPlaylistPill}
           onPress={() => setShowImportModal(true)}
           activeOpacity={0.8}
         >
           <Ionicons name="globe-outline" size={15} color={theme.textPrimary} />
-          <Text style={styles.importPlaylistButtonText}>Community &amp; Import</Text>
+          <Text style={styles.importPlaylistPillText}>Community & Import</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.newPlaylistButton}
+          style={styles.newPlaylistPill}
           onPress={() => {
             setNewPlaylistName('');
             setNewPlaylistCoverUri(null);
@@ -1270,8 +1347,8 @@ export default function LibraryScreen() {
           }}
           activeOpacity={0.8}
         >
-          <Ionicons name="add" size={16} color={theme.onPrimary} />
-          <Text style={styles.newPlaylistButtonText}>New Playlist</Text>
+          <Ionicons name="add" size={17} color={theme.onPrimary} />
+          <Text style={styles.newPlaylistPillText}>New Playlist</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1284,12 +1361,21 @@ export default function LibraryScreen() {
         <FlatList
           data={selectedPlaylistTracks}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
+          renderItem={({ item, index }) => (
             <TrackItem
               track={item}
               queue={selectedPlaylistTracks}
               playbackContext={{ type: 'playlist', name: selectedPlaylist.name }}
+              isCurrentTrack={currentTrack?.id === item.id}
+              isPlaying={isPlaying}
               onDelete={handleRemoveTrackFromCurrentPlaylist}
+              selectionMode={selectionMode}
+              isSelected={selectedTrackIds.has(item.id)}
+              onToggleSelect={handleToggleSelectTrack}
+              index={index}
+              totalTracks={selectedPlaylistTracks.length}
+              onMoveTrack={handleMovePlaylistTrack}
+              onLongPress={() => handleRowLongPress(item.id)}
               onAddToPlaylist={handleOpenAddToPlaylist}
             />
           )}
@@ -1297,15 +1383,20 @@ export default function LibraryScreen() {
             <View style={styles.playlistDetailHeader}>
               {/* Top Bar: Back button on left, ••• menu button on right */}
               <View style={styles.playlistDetailNavRow}>
-                <TouchableOpacity
-                  style={styles.playlistDetailBackBtn}
-                  onPress={() => setSelectedPlaylist(null)}
-                  activeOpacity={0.7}
-                  accessibilityLabel="Back to all playlists"
-                >
-                  <Ionicons name="arrow-back" size={17} color={theme.textPrimary} />
-                  <Text style={styles.playlistDetailBackText}>Playlists</Text>
-                </TouchableOpacity>
+                <View style={styles.playlistDetailNavLeft}>
+                  <TouchableOpacity
+                    style={styles.playlistDetailBackBtn}
+                    onPress={() => {
+                      if (selectionMode) handleExitSelectionMode();
+                      setSelectedPlaylist(null);
+                    }}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Back to all playlists"
+                  >
+                    <Ionicons name="chevron-back" size={20} color={theme.textPrimary} />
+                  </TouchableOpacity>
+                  <Text style={styles.playlistDetailNavTitle}>Playlists</Text>
+                </View>
 
                 <TouchableOpacity
                   style={styles.playlistDetailMenuBtn}
@@ -1326,9 +1417,9 @@ export default function LibraryScreen() {
                   activeOpacity={0.8}
                   accessibilityLabel="Change or remove playlist cover"
                 >
-                  {selectedPlaylist.cover_uri ? (
+                  {selectedPlaylist.cover_uri || selectedPlaylist.cover_url ? (
                     <Image
-                      source={{ uri: selectedPlaylist.cover_uri }}
+                      source={{ uri: (selectedPlaylist.cover_uri || selectedPlaylist.cover_url) as string }}
                       style={styles.playlistHeroCoverImage}
                       resizeMode="cover"
                     />
@@ -1443,7 +1534,7 @@ export default function LibraryScreen() {
               </View>
             )
           }
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: listBottomPadding }]}
           showsVerticalScrollIndicator={false}
         />
       );
@@ -1461,9 +1552,9 @@ export default function LibraryScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.playlistCoverContainer}>
-              {item.cover_uri ? (
+              {item.cover_uri || item.cover_url ? (
                 <Image
-                  source={{ uri: item.cover_uri }}
+                  source={{ uri: (item.cover_uri || item.cover_url) as string }}
                   style={styles.playlistCoverImage}
                   resizeMode="cover"
                 />
@@ -1608,6 +1699,8 @@ export default function LibraryScreen() {
                   track={item}
                   queue={tracks}
                   playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
+                  isCurrentTrack={currentTrack?.id === item.id}
+                  isPlaying={isPlaying}
                   onDelete={handleDeleteTrack}
                   selectionMode={selectionMode}
                   isSelected={isSelected}
@@ -1628,7 +1721,7 @@ export default function LibraryScreen() {
             );
           }}
           ListEmptyComponent={renderEmptySongsState}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: listBottomPadding }]}
           showsVerticalScrollIndicator={false}
         />
       ) : (
@@ -1643,8 +1736,8 @@ export default function LibraryScreen() {
             {
               bottom: currentTrack
                 ? Platform.OS === 'ios'
-                  ? 148
-                  : 124
+                  ? 154
+                  : 130
                 : Platform.OS === 'ios'
                 ? 96
                 : 74,
@@ -1674,7 +1767,7 @@ export default function LibraryScreen() {
                 styles.floatingActionButton,
                 selectedTrackIds.size === 0 && styles.floatingActionBtnDisabled,
               ]}
-              onPress={() => setShowBatchAddToPlaylistModal(true)}
+              onPress={handleOpenBatchAddToPlaylistModal}
               disabled={selectedTrackIds.size === 0}
               activeOpacity={0.7}
             >
@@ -1714,6 +1807,75 @@ export default function LibraryScreen() {
                 ]}
               >
                 Delete
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.floatingActionCloseBtn}
+              onPress={handleExitSelectionMode}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={18} color={theme.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Floating Multi-Select Action Bar for Playlist Detail */}
+      {selectionMode && selectedPlaylist && (
+        <View
+          style={[
+            styles.floatingActionBar,
+            {
+              bottom: currentTrack
+                ? Platform.OS === 'ios'
+                  ? 154
+                  : 130
+                : Platform.OS === 'ios'
+                ? 96
+                : 74,
+            },
+          ]}
+        >
+          {/* Select All / Deselect All + Count */}
+          <TouchableOpacity
+            style={styles.floatingActionSelectAll}
+            onPress={handleToggleSelectAllPlaylistTracks}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={isAllPlaylistTracksSelected ? 'checkmark-circle' : 'ellipse-outline'}
+              size={20}
+              color={isAllPlaylistTracksSelected ? theme.primary : theme.textSecondary}
+            />
+            <Text style={styles.floatingActionCountText}>
+              {selectedTrackIds.size} selected
+            </Text>
+          </TouchableOpacity>
+
+          {/* Action Buttons: Remove from Playlist, Close */}
+          <View style={styles.floatingActionButtonsGroup}>
+            <TouchableOpacity
+              style={[
+                styles.floatingActionButton,
+                selectedTrackIds.size === 0 && styles.floatingActionBtnDisabled,
+              ]}
+              onPress={handleBatchRemoveFromPlaylistConfirm}
+              disabled={selectedTrackIds.size === 0}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="remove-circle-outline"
+                size={16}
+                color={selectedTrackIds.size === 0 ? theme.textMuted : '#FF453A'}
+              />
+              <Text
+                style={[
+                  styles.floatingActionBtnText,
+                  { color: selectedTrackIds.size === 0 ? theme.textMuted : '#FF453A' },
+                ]}
+              >
+                Remove
               </Text>
             </TouchableOpacity>
 
@@ -2195,6 +2357,7 @@ export default function LibraryScreen() {
                         styles.playlistItemPicker,
                         isAssigned && styles.playlistItemPickerSelected,
                       ]}
+                      disabled={isAssigned}
                       onPress={() => handleToggleTrackInPlaylist(pl.id)}
                       activeOpacity={0.7}
                     >
@@ -2220,11 +2383,18 @@ export default function LibraryScreen() {
                         </View>
                       </View>
 
-                      <Ionicons
-                        name={isAssigned ? 'checkmark-circle' : 'ellipse-outline'}
-                        size={22}
-                        color={isAssigned ? theme.primary : theme.textMuted}
-                      />
+                      {isAssigned ? (
+                        <View style={styles.alreadyAddedBadge}>
+                          <Ionicons name="checkmark" size={13} color={theme.textMuted} />
+                          <Text style={styles.alreadyAddedBadgeText}>Already added</Text>
+                        </View>
+                      ) : (
+                        <Ionicons
+                          name="add-circle-outline"
+                          size={22}
+                          color={theme.primary}
+                        />
+                      )}
                     </TouchableOpacity>
                   );
                 })
@@ -2469,38 +2639,61 @@ export default function LibraryScreen() {
                   No playlists created yet.
                 </Text>
               ) : (
-                playlists.map((pl) => (
-                  <TouchableOpacity
-                    key={pl.id}
-                    style={styles.playlistItemPicker}
-                    onPress={() => handleBatchAddTracksToPlaylist(pl)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.playlistItemPickerLeft}>
-                      <View style={styles.playlistItemPickerIcon}>
-                        {pl.cover_uri ? (
-                          <Image
-                            source={{ uri: pl.cover_uri }}
-                            style={styles.playlistCoverImage}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <Ionicons name="albums-outline" size={16} color={theme.textSecondary} />
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.playlistItemPickerTitle} numberOfLines={1}>
-                          {pl.name}
-                        </Text>
-                        <Text style={styles.playlistItemPickerMeta}>
-                          {pl.track_count ?? 0} tracks
-                        </Text>
-                      </View>
-                    </View>
+                playlists.map((pl) => {
+                  const inCount = playlistMembershipMap[pl.id] ?? 0;
+                  const isAllAdded = inCount >= selectedTrackIds.size && selectedTrackIds.size > 0;
+                  const isPartial = inCount > 0 && inCount < selectedTrackIds.size;
 
-                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
-                  </TouchableOpacity>
-                ))
+                  return (
+                    <TouchableOpacity
+                      key={pl.id}
+                      style={[
+                        styles.playlistItemPicker,
+                        isAllAdded && styles.playlistItemPickerSelected,
+                      ]}
+                      disabled={isAllAdded}
+                      onPress={() => handleBatchAddTracksToPlaylist(pl)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.playlistItemPickerLeft}>
+                        <View style={styles.playlistItemPickerIcon}>
+                          {pl.cover_uri ? (
+                            <Image
+                              source={{ uri: pl.cover_uri }}
+                              style={styles.playlistCoverImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="albums-outline" size={16} color={theme.textSecondary} />
+                          )}
+                        </View>
+                        <View>
+                          <Text style={styles.playlistItemPickerTitle} numberOfLines={1}>
+                            {pl.name}
+                          </Text>
+                          <Text style={styles.playlistItemPickerMeta}>
+                            {pl.track_count ?? 0} tracks
+                          </Text>
+                        </View>
+                      </View>
+
+                      {isAllAdded ? (
+                        <View style={styles.alreadyAddedBadge}>
+                          <Ionicons name="checkmark" size={13} color={theme.textMuted} />
+                          <Text style={styles.alreadyAddedBadgeText}>Already added</Text>
+                        </View>
+                      ) : isPartial ? (
+                        <View style={styles.partialAddedBadge}>
+                          <Text style={styles.partialAddedBadgeText}>
+                            {inCount} of {selectedTrackIds.size} already added
+                          </Text>
+                        </View>
+                      ) : (
+                        <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })
               )}
             </ScrollView>
 
@@ -2540,7 +2733,7 @@ export default function LibraryScreen() {
               <TouchableOpacity
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
                 onPress={handleToggleSelectAllAddSongs}
-                disabled={availableSongsForPlaylist.length === 0}
+                disabled={unaddedSongsForPlaylist.length === 0}
                 activeOpacity={0.7}
               >
                 <Ionicons
@@ -2553,13 +2746,13 @@ export default function LibraryScreen() {
                 </Text>
               </TouchableOpacity>
               <Text style={{ fontSize: 12, color: theme.textSecondary }}>
-                {selectedAddSongIds.size} of {availableSongsForPlaylist.length} selected
+                {selectedAddSongIds.size} of {unaddedSongsForPlaylist.length} selected
               </Text>
             </View>
 
-            {/* Scrollable Song List with Checkboxes */}
+            {/* Scrollable Song List with Checkboxes & Already Added Badges */}
             <ScrollView style={{ maxHeight: 300 }} nestedScrollEnabled>
-              {availableSongsForPlaylist.length === 0 ? (
+              {tracks.length === 0 ? (
                 <Text
                   style={{
                     color: theme.textSecondary,
@@ -2568,11 +2761,52 @@ export default function LibraryScreen() {
                     fontSize: 13,
                   }}
                 >
-                  All offline songs are already in this playlist.
+                  No offline songs available in library.
                 </Text>
               ) : (
-                availableSongsForPlaylist.map((song) => {
+                tracks.map((song) => {
+                  const isAlreadyIn = selectedPlaylistTracks.some((t) => t.id === song.id);
                   const isChecked = selectedAddSongIds.has(song.id);
+
+                  if (isAlreadyIn) {
+                    return (
+                      <View
+                        key={song.id}
+                        style={[styles.addSongsTrackRow, { opacity: 0.55 }]}
+                      >
+                        <View style={styles.alreadyAddedBadge}>
+                          <Ionicons name="checkmark" size={12} color={theme.textMuted} />
+                          <Text style={styles.alreadyAddedBadgeText}>Added</Text>
+                        </View>
+                        <View style={{ flex: 1, marginLeft: 8 }}>
+                          <Text
+                            style={{
+                              fontSize: 14,
+                              fontWeight: '600',
+                              color: theme.textSecondary,
+                            }}
+                            numberOfLines={1}
+                          >
+                            {song.title}
+                          </Text>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              color: theme.textMuted,
+                              marginTop: 1,
+                            }}
+                            numberOfLines={1}
+                          >
+                            {song.artist}
+                          </Text>
+                        </View>
+                        <Text style={{ fontSize: 11, color: theme.textMuted }}>
+                          {formatDuration(song.duration)}
+                        </Text>
+                      </View>
+                    );
+                  }
+
                   return (
                     <TouchableOpacity
                       key={song.id}
@@ -2585,7 +2819,7 @@ export default function LibraryScreen() {
                         size={20}
                         color={isChecked ? theme.primary : theme.textMuted}
                       />
-                      <View style={{ flex: 1, marginLeft: 2 }}>
+                      <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text
                           style={{
                             fontSize: 14,

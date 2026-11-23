@@ -303,6 +303,45 @@ export const createStyles = (theme: ThemeColors) =>
     communityList: {
       maxHeight: 260,
     },
+    communityFilterRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 10,
+    },
+    communityFilterLabel: {
+      fontSize: 11,
+      fontWeight: '600',
+      color: theme.textSecondary,
+    },
+    communityFilterButtons: {
+      flexDirection: 'row',
+      gap: 6,
+    },
+    communityFilterBtn: {
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    communityFilterBtnActive: {
+      backgroundColor: theme.surface,
+      borderColor: theme.primary + '88',
+    },
+    communityFilterBtnText: {
+      fontSize: 10.5,
+      fontWeight: '600',
+      color: theme.textSecondary,
+    },
+    communityFilterBtnTextActive: {
+      color: theme.primary,
+      fontWeight: '700',
+    },
     communityCard: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -332,15 +371,98 @@ export const createStyles = (theme: ThemeColors) =>
     communityInfo: {
       flex: 1,
     },
+    communityTitleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
     communityTitle: {
       fontSize: 13,
       fontWeight: '700',
       color: theme.textPrimary,
+      flex: 1,
     },
     communityMeta: {
       fontSize: 11,
       color: theme.textSecondary,
       marginTop: 2,
+    },
+    // Top Rank Badges
+    rankBadge: {
+      paddingHorizontal: 5,
+      paddingVertical: 1.5,
+      borderRadius: 4,
+      borderWidth: 1,
+    },
+    rankBadgeTop1: {
+      backgroundColor: 'rgba(255, 215, 0, 0.12)',
+      borderColor: 'rgba(255, 215, 0, 0.45)',
+    },
+    rankBadgeTop2: {
+      backgroundColor: 'rgba(192, 192, 192, 0.12)',
+      borderColor: 'rgba(192, 192, 192, 0.45)',
+    },
+    rankBadgeTop3: {
+      backgroundColor: 'rgba(205, 127, 50, 0.12)',
+      borderColor: 'rgba(205, 127, 50, 0.45)',
+    },
+    rankBadgeText: {
+      fontSize: 9,
+      fontWeight: '800',
+      letterSpacing: 0.5,
+    },
+    rankBadgeTextTop1: {
+      color: '#FFD700',
+    },
+    rankBadgeTextTop2: {
+      color: '#C0C0C0',
+    },
+    rankBadgeTextTop3: {
+      color: '#CD7F32',
+    },
+    // Heart Action Buttons
+    communityActionsRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    communityHeartBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 7,
+      paddingVertical: 5,
+      borderRadius: 8,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    communityHeartText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: theme.textSecondary,
+    },
+    communityHeartTextActive: {
+      color: '#FF3B30',
+    },
+    previewHeartBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    previewHeartText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: theme.textSecondary,
+    },
+    previewHeartTextActive: {
+      color: '#FF3B30',
     },
     communityImportBtn: {
       paddingHorizontal: 10,
