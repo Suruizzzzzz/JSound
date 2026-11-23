@@ -39,14 +39,13 @@ import {
 } from '@/lib/database';
 import {
   sharePlaylist,
-  fetchSharedPlaylist,
-  importSharedPlaylist,
-  SharedPlaylistData,
+  syncSharedPlaylistTracks,
+  togglePlaylistPublic,
 } from '@/services/playlistSyncService';
-import { downloadTrackToOfflineLibrary, OnlineTrackResult } from '@/services/musicDownloadService';
 import { useSyncProgressStore } from '@/store/syncProgressStore';
 import TrackItem from '@/components/TrackItem';
 import ConfirmModal from '@/components/ConfirmModal';
+import ImportPlaylistModal from '@/components/ImportPlaylistModal';
 import { Track, Playlist } from '@/types/music';
 import { registerGuideTarget, useGuideStore } from '@/store/guideStore';
 import { createStyles } from '@/styles/index.styles';
@@ -83,6 +82,7 @@ export default function LibraryScreen() {
   const reorderTracks = usePlayerStore((state) => state.reorderTracks);
   const removeTrackFromStore = usePlayerStore((state) => state.removeTrack);
   const playTrack = usePlayerStore((state) => state.playTrack);
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
 
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
@@ -194,7 +194,11 @@ export default function LibraryScreen() {
   const [isImporting, setIsImporting] = useState(false);
   const [showAddMusicModal, setShowAddMusicModal] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
-  const [isReordering, setIsReordering] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
+  const [showBatchAddToPlaylistModal, setShowBatchAddToPlaylistModal] = useState(false);
+  const [showAddSongsToPlaylistModal, setShowAddSongsToPlaylistModal] = useState(false);
+  const [selectedAddSongIds, setSelectedAddSongIds] = useState<Set<string>>(new Set());
   const [sortChoice, setSortChoice] = useState<SortChoice>('last_download');
   const [showSortModal, setShowSortModal] = useState(false);
 
@@ -208,6 +212,7 @@ export default function LibraryScreen() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [newPlaylistCoverUri, setNewPlaylistCoverUri] = useState<string | null>(null);
+  const [newPlaylistIsPublic, setNewPlaylistIsPublic] = useState(false);
 
   // Edit Playlist Name Modal State
   const [showEditNameModal, setShowEditNameModal] = useState(false);
@@ -218,18 +223,6 @@ export default function LibraryScreen() {
 
   // Import Shared Playlist Modal State
   const [showImportModal, setShowImportModal] = useState(false);
-  const [importCodeInput, setImportCodeInput] = useState('');
-  const [isSearchingShared, setIsSearchingShared] = useState(false);
-  const [sharedPreview, setSharedPreview] = useState<SharedPlaylistData | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [isImportingShared, setIsImportingShared] = useState(false);
-  const [isDownloadingShared, setIsDownloadingShared] = useState(false);
-  const [downloadSharedProgress, setDownloadSharedProgress] = useState({
-    current: 0,
-    total: 0,
-    title: '',
-    pct: 0,
-  });
 
   // Live Cloud Sync Progress
   const syncDownloading = useSyncProgressStore((state) => state.isDownloading);
@@ -383,6 +376,14 @@ export default function LibraryScreen() {
           setShowSortModal(false);
           return true;
         }
+        if (showAddSongsToPlaylistModal) {
+          setShowAddSongsToPlaylistModal(false);
+          return true;
+        }
+        if (showBatchAddToPlaylistModal) {
+          setShowBatchAddToPlaylistModal(false);
+          return true;
+        }
         if (showCreateModal) {
           setShowCreateModal(false);
           return true;
@@ -411,6 +412,11 @@ export default function LibraryScreen() {
           setConfirmConfig((prev) => ({ ...prev, visible: false }));
           return true;
         }
+        if (selectionMode) {
+          setSelectionMode(false);
+          setSelectedTrackIds(new Set());
+          return true;
+        }
         if (selectedPlaylist) {
           setSelectedPlaylist(null);
           return true;
@@ -436,6 +442,8 @@ export default function LibraryScreen() {
     }, [
       showAddMusicModal,
       showSortModal,
+      showAddSongsToPlaylistModal,
+      showBatchAddToPlaylistModal,
       showCreateModal,
       showEditNameModal,
       showImportModal,
@@ -443,6 +451,7 @@ export default function LibraryScreen() {
       showPlaylistMenuModal,
       trackToAddToPlaylist,
       confirmConfig.visible,
+      selectionMode,
       selectedPlaylist,
     ])
   );
@@ -566,7 +575,8 @@ export default function LibraryScreen() {
       fromIndex < 0 ||
       toIndex < 0 ||
       fromIndex >= tracks.length ||
-      toIndex >= tracks.length
+      toIndex >= tracks.length ||
+      fromIndex === toIndex
     )
       return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -579,9 +589,169 @@ export default function LibraryScreen() {
     await reorderTracks(updated);
   };
 
-  const handleRowLongPress = () => {
+  const handleRowLongPress = useCallback((trackId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setIsReordering(true);
+    setSelectionMode(true);
+    setSelectedTrackIds((prev) => {
+      const next = new Set(prev);
+      next.add(trackId);
+      return next;
+    });
+  }, []);
+
+  const handleToggleSelectTrack = useCallback((trackId: string) => {
+    Haptics.selectionAsync();
+    setSelectedTrackIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trackId)) {
+        next.delete(trackId);
+      } else {
+        next.add(trackId);
+      }
+      return next;
+    });
+  }, []);
+
+  const isAllSelected = tracks.length > 0 && selectedTrackIds.size === tracks.length;
+
+  const handleToggleSelectAll = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isAllSelected) {
+      setSelectedTrackIds(new Set());
+    } else {
+      setSelectedTrackIds(new Set(tracks.map((t) => t.id)));
+    }
+  }, [isAllSelected, tracks]);
+
+  const handleExitSelectionMode = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectionMode(false);
+    setSelectedTrackIds(new Set());
+  }, []);
+
+  const handleBatchDeleteConfirm = () => {
+    if (selectedTrackIds.size === 0) return;
+    const count = selectedTrackIds.size;
+    setConfirmConfig({
+      visible: true,
+      title: 'Delete Songs',
+      message: `Are you sure you want to remove ${count} song${count === 1 ? '' : 's'} from your offline library? This will delete the local audio files.`,
+      icon: 'trash-outline',
+      confirmText: `Delete ${count} Song${count === 1 ? '' : 's'}`,
+      cancelText: 'Cancel',
+      isDestructive: true,
+      onConfirm: async () => {
+        setConfirmConfig((prev) => ({ ...prev, visible: false }));
+        try {
+          const idsToDelete = Array.from(selectedTrackIds);
+          for (const id of idsToDelete) {
+            await removeTrackFromDb(id);
+            await removeTrackFromStore(id);
+          }
+          await loadPlaylists();
+          handleExitSelectionMode();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (e) {
+          console.warn('Failed to batch delete tracks:', e);
+        }
+      },
+    });
+  };
+
+  const handleBatchAddTracksToPlaylist = async (playlist: Playlist) => {
+    try {
+      const idsToAdd = Array.from(selectedTrackIds);
+      let addedCount = 0;
+      for (const trackId of idsToAdd) {
+        try {
+          await addTrackToPlaylist(playlist.id, trackId);
+          addedCount++;
+        } catch {
+          // Track already in playlist, continue
+        }
+      }
+      await loadPlaylists();
+      setShowBatchAddToPlaylistModal(false);
+      handleExitSelectionMode();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Automatically re-sync cloud playlist in background if already shared
+      if (playlist.share_code) {
+        syncSharedPlaylistTracks(playlist.id).catch(() => {});
+      }
+
+      setScanMessage(
+        `Added ${addedCount} song${addedCount === 1 ? '' : 's'} to "${playlist.name}"`
+      );
+    } catch (e) {
+      console.warn('Failed to batch add tracks to playlist:', e);
+    }
+  };
+
+  // Add Songs to Playlist Modal Helpers (inside Playlist Detail)
+  const availableSongsForPlaylist = useMemo(() => {
+    if (!selectedPlaylist) return [];
+    const existingIds = new Set(selectedPlaylistTracks.map((t) => t.id));
+    return tracks.filter((t) => !existingIds.has(t.id));
+  }, [tracks, selectedPlaylist, selectedPlaylistTracks]);
+
+  const isAllAddSongsSelected =
+    availableSongsForPlaylist.length > 0 &&
+    selectedAddSongIds.size === availableSongsForPlaylist.length;
+
+  const handleOpenAddSongsModal = () => {
+    if (!selectedPlaylist) return;
+    setSelectedAddSongIds(new Set());
+    setShowAddSongsToPlaylistModal(true);
+  };
+
+  const handleToggleAddSongSelection = (trackId: string) => {
+    Haptics.selectionAsync();
+    setSelectedAddSongIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trackId)) {
+        next.delete(trackId);
+      } else {
+        next.add(trackId);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllAddSongs = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isAllAddSongsSelected) {
+      setSelectedAddSongIds(new Set());
+    } else {
+      setSelectedAddSongIds(new Set(availableSongsForPlaylist.map((t) => t.id)));
+    }
+  };
+
+  const handleConfirmAddSongsToPlaylist = async () => {
+    if (!selectedPlaylist || selectedAddSongIds.size === 0) return;
+    try {
+      const idsToAdd = Array.from(selectedAddSongIds);
+      for (const trackId of idsToAdd) {
+        try {
+          await addTrackToPlaylist(selectedPlaylist.id, trackId);
+        } catch {
+          // ignore duplicate
+        }
+      }
+      const updated = await getPlaylistTracks(selectedPlaylist.id);
+      setSelectedPlaylistTracks(updated);
+      await loadPlaylists();
+      setShowAddSongsToPlaylistModal(false);
+      setSelectedAddSongIds(new Set());
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Automatically re-sync cloud playlist in background if already shared
+      if (selectedPlaylist.share_code) {
+        syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('Failed to add songs to playlist:', e);
+    }
   };
 
   // -------------------------------------------------------------
@@ -633,6 +803,9 @@ export default function LibraryScreen() {
       setSelectedPlaylistTracks(updated);
       await loadPlaylists();
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      // Automatically re-sync cloud playlist in background if already shared
+      syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
     } catch (e) {
       console.warn('Failed to remove track from playlist:', e);
     }
@@ -699,10 +872,18 @@ export default function LibraryScreen() {
     if (!cleanName) return;
 
     try {
-      await createPlaylist(cleanName, newPlaylistCoverUri);
+      await createPlaylist(
+        cleanName,
+        newPlaylistCoverUri,
+        null,
+        undefined,
+        'local_guest',
+        newPlaylistIsPublic
+      );
       await loadPlaylists();
       setNewPlaylistName('');
       setNewPlaylistCoverUri(null);
+      setNewPlaylistIsPublic(false);
       setShowCreateModal(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
@@ -783,141 +964,21 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleOpenImportModal = () => {
-    setImportCodeInput('');
-    setSharedPreview(null);
-    setImportError(null);
-    setShowImportModal(true);
-  };
-
-  const handleSearchSharedPlaylist = async () => {
-    const trimmed = importCodeInput.trim();
-    if (!trimmed) {
-      setImportError('Please enter a share code or playlist link.');
-      return;
-    }
-    setImportError(null);
-    setIsSearchingShared(true);
-
+  const handleToggleSelectedPlaylistPublic = async () => {
+    if (!selectedPlaylist) return;
+    const newStatus = !selectedPlaylist.is_public;
     try {
-      const data = await fetchSharedPlaylist(trimmed);
-      setSharedPreview(data);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e: any) {
-      setImportError(e.message || 'Could not find playlist with this code.');
-      setSharedPreview(null);
-    } finally {
-      setIsSearchingShared(false);
-    }
-  };
-
-  const handleConfirmImport = async () => {
-    if (!sharedPreview) return;
-    setIsImportingShared(true);
-
-    try {
-      const imported = await importSharedPlaylist(sharedPreview);
+      await togglePlaylistPublic(selectedPlaylist.id, newStatus);
+      setSelectedPlaylist((prev) => (prev ? { ...prev, is_public: newStatus ? 1 : 0 } : null));
       await loadPlaylists();
-      setShowImportModal(false);
-      setSharedPreview(null);
-      setImportCodeInput('');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      // Open the newly imported playlist
-      handleOpenPlaylist(imported);
-    } catch (e: any) {
-      setImportError(e.message || 'Failed to import playlist.');
-    } finally {
-      setIsImportingShared(false);
-    }
-  };
-
-  const handleDownloadAndImportShared = async () => {
-    if (!sharedPreview) return;
-    setIsDownloadingShared(true);
-    setDownloadSharedProgress({
-      current: 0,
-      total: sharedPreview.tracks.length,
-      title: 'Preparing...',
-      pct: 0,
-    });
-
-    try {
-      const imported = await importSharedPlaylist(sharedPreview);
-      await loadPlaylists();
-
-      const currentOfflineTracks = await getAllTracks().catch(() => []);
-      for (let i = 0; i < sharedPreview.tracks.length; i++) {
-        const track = sharedPreview.tracks[i];
-        setDownloadSharedProgress({
-          current: i + 1,
-          total: sharedPreview.tracks.length,
-          title: track.title,
-          pct: 0,
-        });
-
-        // Zero-duplicate check: if track is already downloaded locally with valid audio, skip downloading
-        const normTitle = (track.title || '').trim().toLowerCase();
-        const normArtist = (track.artist || '').trim().toLowerCase();
-        const alreadyDownloaded = currentOfflineTracks.find((loc) => {
-          if (loc.id === track.id && loc.local_audio_uri) return true;
-          if (track.youtube_id && loc.youtube_id === track.youtube_id && loc.local_audio_uri) return true;
-          const locTitle = (loc.title || '').trim().toLowerCase();
-          const locArtist = (loc.artist || '').trim().toLowerCase();
-          return locTitle === normTitle && locArtist === normArtist && !!loc.local_audio_uri;
-        });
-
-        if (alreadyDownloaded) {
-          continue;
-        }
-
-        const onlineId =
-          track.youtube_id ||
-          (track.id.startsWith('online_youtube_')
-            ? track.id.replace('online_youtube_', '')
-            : track.id.startsWith('track_yt_')
-            ? track.id.replace(/^track_yt_/, '')
-            : track.id.startsWith('yt_')
-            ? track.id.replace(/^yt_/, '')
-            : null);
-
-        if (onlineId || track.title) {
-          try {
-            const onlineTrack: OnlineTrackResult = {
-              id: onlineId || `query_${encodeURIComponent(track.title)}`,
-              title: track.title,
-              artist: track.artist || 'Unknown Artist',
-              duration: track.duration || 0,
-              thumbnailUrl: track.local_artwork_uri,
-              source: 'youtube',
-            };
-            await downloadTrackToOfflineLibrary(onlineTrack, (pct) => {
-              setDownloadSharedProgress((prev) => ({
-                ...prev,
-                pct: Math.min(100, Math.max(0, Math.round(pct))),
-              }));
-            });
-          } catch (dlErr) {
-            console.warn(`[ImportShared] Could not download "${track.title}":`, dlErr);
-          }
-        }
-      }
-
-      const allUpdated = await getAllTracks().catch(() => []);
-      if (allUpdated.length > 0) {
-        usePlayerStore.getState().setTracks(allUpdated);
-      }
-
-      setShowImportModal(false);
-      setSharedPreview(null);
-      setImportCodeInput('');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      handleOpenPlaylist(imported);
-    } catch (e: any) {
-      setImportError(e.message || 'Failed to download and import playlist.');
-    } finally {
-      setIsDownloadingShared(false);
+      setScanMessage(
+        newStatus
+          ? `"${selectedPlaylist.name}" is now public in Community Playlists.`
+          : `"${selectedPlaylist.name}" is now private.`
+      );
+    } catch (e) {
+      console.warn('Failed to toggle playlist public status:', e);
     }
   };
 
@@ -1007,6 +1068,9 @@ export default function LibraryScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
       await loadPlaylists();
+
+      // Automatically re-sync cloud playlist in background if already shared
+      syncSharedPlaylistTracks(playlistId).catch(() => {});
     } catch (e) {
       console.warn('Failed to toggle track in playlist:', e);
     }
@@ -1148,7 +1212,7 @@ export default function LibraryScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Row 2: Sort and Reorder Cleanly Underneath */}
+      {/* Row 2: Sort Cleanly Underneath */}
       <View style={styles.filterControlsRow}>
         {/* Sort Button */}
         <TouchableOpacity
@@ -1162,33 +1226,6 @@ export default function LibraryScreen() {
             {getSortLabel(sortChoice)}
           </Text>
         </TouchableOpacity>
-
-        {/* Reorder Toggle Button */}
-        {tracks.length > 1 && (
-          <TouchableOpacity
-            style={[styles.reorderToggleButton, isReordering && styles.reorderToggleActive]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setIsReordering((prev) => !prev);
-            }}
-            activeOpacity={0.7}
-            accessibilityLabel={isReordering ? 'Finish reordering' : 'Reorder library tracks'}
-          >
-            <Ionicons
-              name={isReordering ? 'checkmark' : 'swap-vertical'}
-              size={14}
-              color={isReordering ? theme.onPrimary : theme.textSecondary}
-            />
-            <Text
-              style={[
-                styles.reorderToggleText,
-                isReordering && styles.reorderToggleTextActive,
-              ]}
-            >
-              {isReordering ? 'Done' : 'Reorder'}
-            </Text>
-          </TouchableOpacity>
-        )}
       </View>
 
       {scanMessage && (
@@ -1216,11 +1253,11 @@ export default function LibraryScreen() {
       <View style={styles.playlistHeaderActions}>
         <TouchableOpacity
           style={styles.importPlaylistButton}
-          onPress={handleOpenImportModal}
+          onPress={() => setShowImportModal(true)}
           activeOpacity={0.8}
         >
-          <Ionicons name="cloud-download-outline" size={15} color={theme.textPrimary} />
-          <Text style={styles.importPlaylistButtonText}>Import</Text>
+          <Ionicons name="globe-outline" size={15} color={theme.textPrimary} />
+          <Text style={styles.importPlaylistButtonText}>Community &amp; Import</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -1228,6 +1265,7 @@ export default function LibraryScreen() {
           onPress={() => {
             setNewPlaylistName('');
             setNewPlaylistCoverUri(null);
+            setNewPlaylistIsPublic(false);
             setShowCreateModal(true);
           }}
           activeOpacity={0.8}
@@ -1322,6 +1360,16 @@ export default function LibraryScreen() {
                       {selectedPlaylist.is_synced ? 'Synced' : 'Offline'}
                     </Text>
                   </View>
+                  <View style={styles.playlistStatusBadge}>
+                    <Ionicons
+                      name={selectedPlaylist.is_public ? 'globe-outline' : 'lock-closed-outline'}
+                      size={12}
+                      color={theme.textSecondary}
+                    />
+                    <Text style={styles.playlistStatusBadgeText}>
+                      {selectedPlaylist.is_public ? 'Public' : 'Private'}
+                    </Text>
+                  </View>
                   {selectedPlaylist.share_code && (
                     <View style={styles.playlistStatusBadge}>
                       <Ionicons name="link-outline" size={12} color={theme.textSecondary} />
@@ -1330,7 +1378,7 @@ export default function LibraryScreen() {
                   )}
                 </View>
 
-                {/* Side-by-side Button Row: Play All + Share */}
+                {/* Button Row: Play All + Add Songs + Share */}
                 <View style={styles.playlistHeroButtonRow}>
                   <TouchableOpacity
                     style={styles.playlistHeroPlayAllBtn}
@@ -1338,8 +1386,18 @@ export default function LibraryScreen() {
                     activeOpacity={0.8}
                     accessibilityLabel="Play all songs in playlist"
                   >
-                    <Ionicons name="play" size={18} color={theme.onPrimary} />
+                    <Ionicons name="play" size={17} color={theme.onPrimary} />
                     <Text style={styles.playlistHeroPlayAllText}>Play All</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.playlistHeroShareBtn}
+                    onPress={handleOpenAddSongsModal}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Add songs to playlist"
+                  >
+                    <Ionicons name="add-circle-outline" size={17} color={theme.textPrimary} />
+                    <Text style={styles.playlistHeroShareText}>Add Songs</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -1352,7 +1410,7 @@ export default function LibraryScreen() {
                     {isSharingPlaylist ? (
                       <ActivityIndicator size="small" color={theme.textPrimary} />
                     ) : (
-                      <Ionicons name="share-social-outline" size={18} color={theme.textPrimary} />
+                      <Ionicons name="share-social-outline" size={17} color={theme.textPrimary} />
                     )}
                     <Text style={styles.playlistHeroShareText}>Share</Text>
                   </TouchableOpacity>
@@ -1372,8 +1430,16 @@ export default function LibraryScreen() {
                 </View>
                 <Text style={styles.emptyTitle}>Playlist is empty</Text>
                 <Text style={styles.emptySubtitle}>
-                  Tap the bookmark icon on any song in your library to add it to this playlist.
+                  Tap below to add songs from your library to this playlist.
                 </Text>
+                <TouchableOpacity
+                  style={[styles.addMusicButton, { marginTop: 14 }]}
+                  onPress={handleOpenAddSongsModal}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="add" size={16} color={theme.onPrimary} />
+                  <Text style={styles.addMusicButtonText}>Add Songs</Text>
+                </TouchableOpacity>
               </View>
             )
           }
@@ -1519,6 +1585,7 @@ export default function LibraryScreen() {
           keyExtractor={(item) => item.id}
           renderItem={({ item, index }) => {
             const isHighlighted = highlightedTrackId === item.id;
+            const isSelected = selectedTrackIds.has(item.id);
             return (
               <Animated.View
                 ref={(r) => {
@@ -1542,12 +1609,13 @@ export default function LibraryScreen() {
                   queue={tracks}
                   playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
                   onDelete={handleDeleteTrack}
-                  showDragHandle={isReordering}
-                  onMoveUp={() => handleMoveTrack(index, index - 1)}
-                  onMoveDown={() => handleMoveTrack(index, index + 1)}
-                  isFirst={index === 0}
-                  isLast={index === tracks.length - 1}
-                  onLongPress={handleRowLongPress}
+                  selectionMode={selectionMode}
+                  isSelected={isSelected}
+                  onToggleSelect={handleToggleSelectTrack}
+                  index={index}
+                  totalTracks={tracks.length}
+                  onMoveTrack={handleMoveTrack}
+                  onLongPress={() => handleRowLongPress(item.id)}
                   onAddToPlaylist={handleOpenAddToPlaylist}
                   onPlay={() => {
                     const guideState = useGuideStore.getState();
@@ -1565,6 +1633,99 @@ export default function LibraryScreen() {
         />
       ) : (
         renderPlaylistsTab()
+      )}
+
+      {/* Floating Multi-Select Action Bar */}
+      {selectionMode && activeTab === 'songs' && (
+        <View
+          style={[
+            styles.floatingActionBar,
+            {
+              bottom: currentTrack
+                ? Platform.OS === 'ios'
+                  ? 148
+                  : 124
+                : Platform.OS === 'ios'
+                ? 96
+                : 74,
+            },
+          ]}
+        >
+          {/* Select All / Deselect All + Count */}
+          <TouchableOpacity
+            style={styles.floatingActionSelectAll}
+            onPress={handleToggleSelectAll}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={isAllSelected ? 'checkmark-circle' : 'ellipse-outline'}
+              size={20}
+              color={isAllSelected ? theme.primary : theme.textSecondary}
+            />
+            <Text style={styles.floatingActionCountText}>
+              {selectedTrackIds.size} selected
+            </Text>
+          </TouchableOpacity>
+
+          {/* Action Buttons: + Playlist, Delete, Close */}
+          <View style={styles.floatingActionButtonsGroup}>
+            <TouchableOpacity
+              style={[
+                styles.floatingActionButton,
+                selectedTrackIds.size === 0 && styles.floatingActionBtnDisabled,
+              ]}
+              onPress={() => setShowBatchAddToPlaylistModal(true)}
+              disabled={selectedTrackIds.size === 0}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="bookmark-outline"
+                size={16}
+                color={selectedTrackIds.size === 0 ? theme.textMuted : theme.textPrimary}
+              />
+              <Text
+                style={[
+                  styles.floatingActionBtnText,
+                  selectedTrackIds.size === 0 && styles.floatingActionBtnTextDisabled,
+                ]}
+              >
+                + Playlist
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.floatingActionButton,
+                selectedTrackIds.size === 0 && styles.floatingActionBtnDisabled,
+              ]}
+              onPress={handleBatchDeleteConfirm}
+              disabled={selectedTrackIds.size === 0}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="trash-outline"
+                size={16}
+                color={selectedTrackIds.size === 0 ? theme.textMuted : '#FF453A'}
+              />
+              <Text
+                style={[
+                  styles.floatingActionBtnText,
+                  { color: selectedTrackIds.size === 0 ? theme.textMuted : '#FF453A' },
+                ]}
+              >
+                Delete
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.floatingActionCloseBtn}
+              onPress={handleExitSelectionMode}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="close" size={18} color={theme.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
 
       {/* Add Music Modal (Inline Overlay with zIndex 500 so NewcomerGuideModal at zIndex 9999 renders cleanly above it) */}
@@ -1860,6 +2021,48 @@ export default function LibraryScreen() {
               autoFocus
             />
 
+            {/* Public / Private Discovery Toggle */}
+            <TouchableOpacity
+              style={styles.publicToggleRow}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setNewPlaylistIsPublic((prev) => !prev);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.publicToggleLeft}>
+                <Ionicons
+                  name={newPlaylistIsPublic ? 'globe-outline' : 'lock-closed-outline'}
+                  size={18}
+                  color={newPlaylistIsPublic ? theme.primary : theme.textSecondary}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.publicToggleTitle}>
+                    {newPlaylistIsPublic ? 'Public Playlist' : 'Private Playlist'}
+                  </Text>
+                  <Text style={styles.publicToggleSubtitle}>
+                    {newPlaylistIsPublic
+                      ? 'Discoverable by all users in Community Playlists'
+                      : 'Only visible to you and users with your share code'}
+                  </Text>
+                </View>
+              </View>
+
+              <View
+                style={[
+                  styles.publicToggleSwitch,
+                  newPlaylistIsPublic && styles.publicToggleSwitchActive,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.publicToggleThumb,
+                    newPlaylistIsPublic && styles.publicToggleThumbActive,
+                  ]}
+                />
+              </View>
+            </TouchableOpacity>
+
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
@@ -1929,203 +2132,15 @@ export default function LibraryScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Import Shared Playlist Modal */}
-      <Modal
+      {/* Theme-Aware Import Shared Playlist Modal */}
+      <ImportPlaylistModal
         visible={showImportModal}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setShowImportModal(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Import Shared Playlist</Text>
-            <Text style={styles.modalSubtitle}>
-              Enter a share code (e.g. JST-XXXX) or paste a JStream link
-            </Text>
-
-            <View style={styles.importInputRow}>
-              <TextInput
-                style={styles.importInput}
-                value={importCodeInput}
-                onChangeText={(t) => {
-                  setImportCodeInput(t);
-                  if (importError) setImportError(null);
-                }}
-                placeholder="JST-XXXX or jstream://..."
-                placeholderTextColor={theme.textMuted}
-                autoCapitalize="characters"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                style={styles.importSearchBtn}
-                onPress={handleSearchSharedPlaylist}
-                disabled={isSearchingShared}
-                activeOpacity={0.8}
-              >
-                {isSearchingShared ? (
-                  <ActivityIndicator size="small" color={theme.onPrimary} />
-                ) : (
-                  <Text style={styles.importSearchBtnText}>Find</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {importError && (
-              <View
-                style={[
-                  styles.messageBox,
-                  {
-                    backgroundColor: 'rgba(255, 69, 58, 0.1)',
-                    borderColor: 'rgba(255, 69, 58, 0.3)',
-                    marginBottom: 14,
-                  },
-                ]}
-              >
-                <Ionicons name="alert-circle-outline" size={16} color="#FF453A" />
-                <Text style={[styles.messageText, { color: '#FF453A' }]}>{importError}</Text>
-              </View>
-            )}
-
-            {sharedPreview && (
-              <View style={styles.sharedPreviewCard}>
-                <View style={styles.sharedPreviewHeader}>
-                  <View style={styles.sharedPreviewCover}>
-                    {sharedPreview.cover_url ? (
-                      <Image
-                        source={{ uri: sharedPreview.cover_url }}
-                        style={styles.sharedPreviewCoverImage}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <Ionicons name="albums-outline" size={24} color={theme.textSecondary} />
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.sharedPreviewTitle} numberOfLines={1}>
-                      {sharedPreview.name}
-                    </Text>
-                    <Text style={styles.sharedPreviewSubtitle}>
-                      {sharedPreview.tracks.length} song{sharedPreview.tracks.length === 1 ? '' : 's'} • Shared via {sharedPreview.share_code}
-                    </Text>
-                  </View>
-                </View>
-
-                {sharedPreview.tracks.length > 0 && (
-                  <ScrollView style={styles.sharedTrackList} nestedScrollEnabled>
-                    {sharedPreview.tracks.slice(0, 15).map((t, i) => (
-                      <View key={t.id || i} style={styles.sharedTrackItem}>
-                        {t.local_artwork_uri ? (
-                          <Image
-                            source={{ uri: t.local_artwork_uri }}
-                            style={styles.sharedTrackThumb}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <View style={styles.sharedTrackThumbPlaceholder}>
-                            <Ionicons name="musical-note" size={13} color={theme.textSecondary} />
-                          </View>
-                        )}
-                        <Text style={styles.sharedTrackTitle} numberOfLines={1}>
-                          {t.title}
-                        </Text>
-                        <Text style={styles.sharedTrackArtist} numberOfLines={1}>
-                          {t.artist}
-                        </Text>
-                        <Text style={styles.sharedTrackDuration}>
-                          {formatDuration(t.duration)}
-                        </Text>
-                      </View>
-                    ))}
-                    {sharedPreview.tracks.length > 15 && (
-                      <Text style={[styles.sharedPreviewSubtitle, { textAlign: 'center', marginTop: 4 }]}>
-                        + {sharedPreview.tracks.length - 15} more songs
-                      </Text>
-                    )}
-                  </ScrollView>
-                )}
-
-                {/* In-Modal Download Progress while Download & Import is active */}
-                {isDownloadingShared && (
-                  <View style={styles.downloadSharedProgressContainer}>
-                    <View style={styles.downloadSharedProgressHeader}>
-                      <Text style={styles.downloadSharedProgressText} numberOfLines={1}>
-                        Downloading {downloadSharedProgress.current}/{downloadSharedProgress.total}: {downloadSharedProgress.title}
-                      </Text>
-                      <Text style={styles.downloadSharedProgressPct}>
-                        {downloadSharedProgress.pct}%
-                      </Text>
-                    </View>
-                    <View style={styles.progressBarTrack}>
-                      <View
-                        style={[
-                          styles.progressBarFill,
-                          {
-                            width: `${
-                              downloadSharedProgress.total > 0
-                                ? Math.round(
-                                    ((downloadSharedProgress.current - 1 + downloadSharedProgress.pct / 100) /
-                                      downloadSharedProgress.total) *
-                                      100
-                                  )
-                                : 0
-                            }%`,
-                          },
-                        ]}
-                      />
-                    </View>
-                  </View>
-                )}
-              </View>
-            )}
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setShowImportModal(false)}
-                disabled={isDownloadingShared || isImportingShared}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.modalCancelText}>Close</Text>
-              </TouchableOpacity>
-
-              {sharedPreview && (
-                <View style={styles.modalActionButtonsRow}>
-                  {/* Secondary button: Import Only */}
-                  <TouchableOpacity
-                    style={styles.modalSecondaryActionBtn}
-                    onPress={handleConfirmImport}
-                    disabled={isImportingShared || isDownloadingShared}
-                    activeOpacity={0.8}
-                  >
-                    {isImportingShared ? (
-                      <ActivityIndicator size="small" color={theme.textPrimary} />
-                    ) : (
-                      <Text style={styles.modalSecondaryActionText}>Import Only</Text>
-                    )}
-                  </TouchableOpacity>
-
-                  {/* Primary button: Download & Import */}
-                  <TouchableOpacity
-                    style={styles.modalSaveBtn}
-                    onPress={handleDownloadAndImportShared}
-                    disabled={isImportingShared || isDownloadingShared}
-                    activeOpacity={0.8}
-                  >
-                    {isDownloadingShared ? (
-                      <ActivityIndicator size="small" color={theme.onPrimary} />
-                    ) : (
-                      <Text style={styles.modalSaveText}>Download & Import</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        onClose={() => setShowImportModal(false)}
+        onImportSuccess={async (imported) => {
+          await loadPlaylists();
+          handleOpenPlaylist(imported);
+        }}
+      />
 
       {/* Add to Playlist Modal */}
       <Modal
@@ -2359,6 +2374,42 @@ export default function LibraryScreen() {
               <Text style={styles.menuSheetOptionText}>Share Playlist Link</Text>
             </TouchableOpacity>
 
+            {/* Toggle Public / Private Playlist Discovery */}
+            <TouchableOpacity
+              style={styles.menuSheetOption}
+              onPress={() => {
+                setShowPlaylistMenuModal(false);
+                handleToggleSelectedPlaylistPublic();
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={selectedPlaylist?.is_public ? 'lock-closed-outline' : 'globe-outline'}
+                size={20}
+                color={theme.textPrimary}
+              />
+              <Text style={styles.menuSheetOptionText}>
+                {selectedPlaylist?.is_public ? 'Make Playlist Private' : 'Make Playlist Public'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Sync / Update Shared Playlist */}
+            {Boolean(selectedPlaylist?.share_code) && (
+              <TouchableOpacity
+                style={styles.menuSheetOption}
+                onPress={() => {
+                  setShowPlaylistMenuModal(false);
+                  handleSharePlaylist();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="cloud-upload-outline" size={20} color={theme.primary} />
+                <Text style={[styles.menuSheetOptionText, { color: theme.primary, fontWeight: '700' }]}>
+                  Sync / Update Shared Playlist
+                </Text>
+              </TouchableOpacity>
+            )}
+
             {/* Delete Playlist */}
             <TouchableOpacity
               style={styles.menuSheetOption}
@@ -2383,6 +2434,213 @@ export default function LibraryScreen() {
               <Text style={styles.menuSheetCancelText}>Cancel</Text>
             </TouchableOpacity>
           </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Batch Add to Playlist Modal (from Library Multi-Select Action Bar) */}
+      <Modal
+        visible={showBatchAddToPlaylistModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowBatchAddToPlaylistModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowBatchAddToPlaylistModal(false)}
+        >
+          <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>Add to Playlist</Text>
+            <Text style={styles.modalSubtitle}>
+              Select destination playlist for {selectedTrackIds.size} song
+              {selectedTrackIds.size === 1 ? '' : 's'}
+            </Text>
+
+            <ScrollView style={styles.playlistPickerList}>
+              {playlists.length === 0 ? (
+                <Text
+                  style={{
+                    color: theme.textSecondary,
+                    textAlign: 'center',
+                    paddingVertical: 18,
+                    fontSize: 13,
+                  }}
+                >
+                  No playlists created yet.
+                </Text>
+              ) : (
+                playlists.map((pl) => (
+                  <TouchableOpacity
+                    key={pl.id}
+                    style={styles.playlistItemPicker}
+                    onPress={() => handleBatchAddTracksToPlaylist(pl)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.playlistItemPickerLeft}>
+                      <View style={styles.playlistItemPickerIcon}>
+                        {pl.cover_uri ? (
+                          <Image
+                            source={{ uri: pl.cover_uri }}
+                            style={styles.playlistCoverImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="albums-outline" size={16} color={theme.textSecondary} />
+                        )}
+                      </View>
+                      <View>
+                        <Text style={styles.playlistItemPickerTitle} numberOfLines={1}>
+                          {pl.name}
+                        </Text>
+                        <Text style={styles.playlistItemPickerMeta}>
+                          {pl.track_count ?? 0} tracks
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowBatchAddToPlaylistModal(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Multi-Select Batch Add Songs to Playlist Modal (inside Playlist Detail) */}
+      <Modal
+        visible={showAddSongsToPlaylistModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowAddSongsToPlaylistModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowAddSongsToPlaylistModal(false)}
+        >
+          <View style={styles.addSongsModalContent} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>Add Songs</Text>
+            <Text style={styles.modalSubtitle} numberOfLines={1}>
+              {selectedPlaylist?.name}
+            </Text>
+
+            {/* Select All Toggle Header */}
+            <View style={styles.addSongsHeaderRow}>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                onPress={handleToggleSelectAllAddSongs}
+                disabled={availableSongsForPlaylist.length === 0}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isAllAddSongsSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={20}
+                  color={isAllAddSongsSelected ? theme.primary : theme.textSecondary}
+                />
+                <Text style={{ fontSize: 13, fontWeight: '700', color: theme.textPrimary }}>
+                  {isAllAddSongsSelected ? 'Deselect All' : 'Select All'}
+                </Text>
+              </TouchableOpacity>
+              <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                {selectedAddSongIds.size} of {availableSongsForPlaylist.length} selected
+              </Text>
+            </View>
+
+            {/* Scrollable Song List with Checkboxes */}
+            <ScrollView style={{ maxHeight: 300 }} nestedScrollEnabled>
+              {availableSongsForPlaylist.length === 0 ? (
+                <Text
+                  style={{
+                    color: theme.textSecondary,
+                    textAlign: 'center',
+                    paddingVertical: 24,
+                    fontSize: 13,
+                  }}
+                >
+                  All offline songs are already in this playlist.
+                </Text>
+              ) : (
+                availableSongsForPlaylist.map((song) => {
+                  const isChecked = selectedAddSongIds.has(song.id);
+                  return (
+                    <TouchableOpacity
+                      key={song.id}
+                      style={styles.addSongsTrackRow}
+                      onPress={() => handleToggleAddSongSelection(song.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={isChecked ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={20}
+                        color={isChecked ? theme.primary : theme.textMuted}
+                      />
+                      <View style={{ flex: 1, marginLeft: 2 }}>
+                        <Text
+                          style={{
+                            fontSize: 14,
+                            fontWeight: '600',
+                            color: theme.textPrimary,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {song.title}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            color: theme.textSecondary,
+                            marginTop: 1,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {song.artist}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 11, color: theme.textMuted }}>
+                        {formatDuration(song.duration)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            {/* Sticky Bottom Actions: Cancel + Add X Songs */}
+            <View style={styles.addSongsStickyFooter}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowAddSongsToPlaylistModal(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.modalSaveBtn,
+                  selectedAddSongIds.size === 0 && { opacity: 0.4 },
+                ]}
+                onPress={handleConfirmAddSongsToPlaylist}
+                disabled={selectedAddSongIds.size === 0}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalSaveText}>
+                  Add {selectedAddSongIds.size} Song{selectedAddSongIds.size === 1 ? '' : 's'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </TouchableOpacity>
       </Modal>
     </SafeAreaView>

@@ -24,6 +24,7 @@ export interface Playlist {
   sync_status?: string | null;
   sync_version?: number;
   is_synced: number; // 0 or 1
+  is_public?: number; // 0 or 1
   created_at: string;
   track_count?: number;
 }

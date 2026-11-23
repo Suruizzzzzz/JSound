@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,15 @@ import {
   Image,
   ActivityIndicator,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  runOnJS,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { Track } from '@/types/music';
 import { resumeAudio } from '@/services/audioService';
 import { usePlayerStore, PlaybackContext } from '@/store/playerStore';
@@ -14,19 +22,19 @@ import { useThemeStore } from '@/store/themeStore';
 import ConfirmModal from '@/components/ConfirmModal';
 import { createStyles } from './TrackItem.styles';
 
-interface TrackItemProps {
+export interface TrackItemProps {
   track: Track;
   queue: Track[];
   playbackContext?: PlaybackContext | null;
   onDelete?: (id: string) => void;
   downloadProgress?: number;
   onCancelDownload?: (id: string) => void;
-  showDragHandle?: boolean;
-  onMoveUp?: () => void;
-  onMoveDown?: () => void;
-  isFirst?: boolean;
-  isLast?: boolean;
-  dragHandleProps?: any;
+  selectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  index?: number;
+  totalTracks?: number;
+  onMoveTrack?: (fromIndex: number, toIndex: number) => void;
   onLongPress?: () => void;
   onAddToPlaylist?: (track: Track) => void;
   onPlay?: () => void;
@@ -39,6 +47,8 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+const ROW_HEIGHT = 66;
+
 export default function TrackItem({
   track,
   queue,
@@ -46,12 +56,12 @@ export default function TrackItem({
   onDelete,
   downloadProgress,
   onCancelDownload,
-  showDragHandle,
-  onMoveUp,
-  onMoveDown,
-  isFirst,
-  isLast,
-  dragHandleProps,
+  selectionMode,
+  isSelected,
+  onToggleSelect,
+  index,
+  totalTracks,
+  onMoveTrack,
   onLongPress,
   onAddToPlaylist,
   onPlay,
@@ -68,11 +78,77 @@ export default function TrackItem({
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
+  // Gesture handling for hold-and-drag reordering
+  const translateY = useSharedValue(0);
+  const isDragging = useSharedValue(false);
+
+  const triggerHaptic = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
+  const handleDrop = useCallback(
+    (offsetPx: number) => {
+      if (index === undefined || totalTracks === undefined || !onMoveTrack) return;
+      const offsetIndex = Math.round(offsetPx / ROW_HEIGHT);
+      if (offsetIndex !== 0) {
+        const targetIndex = Math.max(0, Math.min(totalTracks - 1, index + offsetIndex));
+        if (targetIndex !== index) {
+          onMoveTrack(index, targetIndex);
+        }
+      }
+    },
+    [index, totalTracks, onMoveTrack]
+  );
+
+  const panGesture = Gesture.Pan()
+    .onStart(() => {
+      'worklet';
+      isDragging.value = true;
+      runOnJS(triggerHaptic)();
+    })
+    .onUpdate((event) => {
+      'worklet';
+      translateY.value = event.translationY;
+    })
+    .onEnd((event) => {
+      'worklet';
+      runOnJS(handleDrop)(event.translationY);
+      translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
+      isDragging.value = false;
+    })
+    .onFinalize(() => {
+      'worklet';
+      translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
+      isDragging.value = false;
+    });
+
+  const animatedRowStyle = useAnimatedStyle(() => {
+    return {
+      transform: [
+        { translateY: translateY.value },
+        { scale: isDragging.value ? 1.02 : 1 },
+      ],
+      zIndex: isDragging.value ? 999 : 1,
+      elevation: isDragging.value ? 8 : 0,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: isDragging.value ? 4 : 0 },
+      shadowOpacity: isDragging.value ? 0.25 : 0,
+      shadowRadius: isDragging.value ? 6 : 0,
+      backgroundColor: isDragging.value ? theme.surfaceElevated : 'transparent',
+    };
+  });
+
   const handlePress = () => {
+    if (selectionMode) {
+      onToggleSelect?.(track.id);
+      return;
+    }
+
     onPlay?.();
     if (isUnavailable) {
-      // If tapped and file is not on device, find next playable track in queue so playback continues
-      const nextPlayable = queue.find((t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id);
+      const nextPlayable = queue.find(
+        (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id
+      );
       if (nextPlayable) {
         playTrack(nextPlayable, queue, playbackContext);
       }
@@ -92,144 +168,149 @@ export default function TrackItem({
   };
 
   return (
-    <TouchableOpacity
-      style={[styles.container, isCurrent && styles.activeContainer]}
-      activeOpacity={0.7}
-      onPress={handlePress}
-      onLongPress={onLongPress}
-      delayLongPress={300}
-    >
-      {/* Artwork Thumbnail / Minimalist Monochrome Placeholder */}
-      <View style={styles.artworkContainer}>
-        {track.local_artwork_uri ? (
-          <Image source={{ uri: track.local_artwork_uri }} style={styles.artwork} />
-        ) : (
-          <View style={styles.placeholder}>
+    <Animated.View style={animatedRowStyle}>
+      <TouchableOpacity
+        style={[
+          styles.container,
+          isCurrent && styles.activeContainer,
+          isSelected && styles.selectedContainer,
+        ]}
+        activeOpacity={0.7}
+        onPress={handlePress}
+        onLongPress={onLongPress}
+        delayLongPress={280}
+      >
+        {/* Selection Checkbox (shown in selection mode) */}
+        {selectionMode && (
+          <TouchableOpacity
+            style={styles.selectionCheckbox}
+            onPress={() => onToggleSelect?.(track.id)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel={isSelected ? 'Deselect song' : 'Select song'}
+          >
             <Ionicons
-              name={isCurrent && isPlaying ? 'volume-high' : 'musical-note'}
-              size={18}
-              color={isCurrent ? theme.primary : theme.textSecondary}
+              name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+              size={22}
+              color={isSelected ? theme.primary : theme.textMuted}
             />
-          </View>
+          </TouchableOpacity>
         )}
-      </View>
 
-      {/* Title & Artist info */}
-      <View style={styles.info}>
-        <Text
-          style={[styles.title, isCurrent && styles.activeTitle]}
-          numberOfLines={1}
-        >
-          {track.title}
-        </Text>
-        <View style={styles.metaRow}>
-          <Text style={styles.artist} numberOfLines={1}>
-            {track.artist}
-          </Text>
-          <Text style={styles.metaDot}>•</Text>
-          <Text style={styles.duration}>
-            {formatDuration(track.duration)}
-          </Text>
-          {isUnavailable && downloadProgress === undefined && (
-            <>
-              <Text style={styles.metaDot}>•</Text>
-              <Text style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
-                Offline / Not on device
-              </Text>
-            </>
+        {/* Artwork Thumbnail / Minimalist Monochrome Placeholder */}
+        <View style={styles.artworkContainer}>
+          {track.local_artwork_uri ? (
+            <Image source={{ uri: track.local_artwork_uri }} style={styles.artwork} />
+          ) : (
+            <View style={styles.placeholder}>
+              <Ionicons
+                name={isCurrent && isPlaying ? 'volume-high' : 'musical-note'}
+                size={18}
+                color={isCurrent ? theme.primary : theme.textSecondary}
+              />
+            </View>
           )}
         </View>
-      </View>
 
-      {/* Right-side Action & Handle Area */}
-      <View style={styles.actionsRow}>
-        {/* Active download progress with cancel */}
-        {downloadProgress !== undefined && (
-          <TouchableOpacity
-            style={styles.downloadProgressContainer}
-            onPress={() => onCancelDownload?.(track.id)}
-            activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Cancel download"
+        {/* Title & Artist info */}
+        <View style={styles.info}>
+          <Text
+            style={[styles.title, isCurrent && styles.activeTitle]}
+            numberOfLines={1}
           >
-            <ActivityIndicator size="small" color={theme.primary} />
-            <Text style={styles.downloadProgressText}>{downloadProgress}%</Text>
-            <Ionicons name="close-circle" size={15} color={theme.textSecondary} />
-          </TouchableOpacity>
-        )}
-
-        {/* Optional Add to Playlist Button */}
-        {onAddToPlaylist && (
-          <TouchableOpacity
-            style={styles.actionIconButton}
-            onPress={() => onAddToPlaylist(track)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Add to playlist"
-          >
-            <Ionicons name="bookmark-outline" size={17} color={theme.textMuted} />
-          </TouchableOpacity>
-        )}
-
-        {/* Optional action / delete button with ConfirmModal */}
-        {onDelete && (
-          <>
-            <TouchableOpacity
-              style={styles.deleteButton}
-              onPress={() => setShowDeleteModal(true)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Ionicons name="trash-outline" size={17} color={theme.textMuted} />
-            </TouchableOpacity>
-
-            <ConfirmModal
-              visible={showDeleteModal}
-              title="Delete Track"
-              message={`Are you sure you want to remove "${track.title}" from your offline library?`}
-              icon="trash-outline"
-              confirmText="Delete"
-              isDestructive={true}
-              onConfirm={() => {
-                setShowDeleteModal(false);
-                onDelete(track.id);
-              }}
-              onCancel={() => setShowDeleteModal(false)}
-            />
-          </>
-        )}
-
-        {/* Reorder Up / Down arrow buttons */}
-        {showDragHandle && (
-          <View style={styles.reorderControlsRow}>
-            <TouchableOpacity
-              style={[styles.reorderArrowBtn, isFirst && styles.reorderArrowDisabled]}
-              onPress={onMoveUp}
-              disabled={isFirst}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityLabel="Move track up"
-            >
-              <Ionicons
-                name="chevron-up"
-                size={16}
-                color={isFirst ? theme.textMuted : theme.textPrimary}
-              />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.reorderArrowBtn, isLast && styles.reorderArrowDisabled]}
-              onPress={onMoveDown}
-              disabled={isLast}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              accessibilityLabel="Move track down"
-            >
-              <Ionicons
-                name="chevron-down"
-                size={16}
-                color={isLast ? theme.textMuted : theme.textPrimary}
-              />
-            </TouchableOpacity>
+            {track.title}
+          </Text>
+          <View style={styles.metaRow}>
+            <Text style={styles.artist} numberOfLines={1}>
+              {track.artist}
+            </Text>
+            <Text style={styles.metaDot}>•</Text>
+            <Text style={styles.duration}>
+              {formatDuration(track.duration)}
+            </Text>
+            {isUnavailable && downloadProgress === undefined && (
+              <>
+                <Text style={styles.metaDot}>•</Text>
+                <Text style={{ fontSize: 11, color: theme.textMuted, fontStyle: 'italic' }}>
+                  Offline / Not on device
+                </Text>
+              </>
+            )}
           </View>
-        )}
-      </View>
-    </TouchableOpacity>
+        </View>
+
+        {/* Right-side Action & Handle Area */}
+        <View style={styles.actionsRow}>
+          {/* Active download progress with cancel */}
+          {downloadProgress !== undefined && (
+            <TouchableOpacity
+              style={styles.downloadProgressContainer}
+              onPress={() => onCancelDownload?.(track.id)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Cancel download"
+            >
+              <ActivityIndicator size="small" color={theme.primary} />
+              <Text style={styles.downloadProgressText}>{downloadProgress}%</Text>
+              <Ionicons name="close-circle" size={15} color={theme.textSecondary} />
+            </TouchableOpacity>
+          )}
+
+          {/* Normal Mode: Bookmark & Delete Buttons */}
+          {!selectionMode && (
+            <>
+              {onAddToPlaylist && (
+                <TouchableOpacity
+                  style={styles.actionIconButton}
+                  onPress={() => onAddToPlaylist(track)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityLabel="Add to playlist"
+                >
+                  <Ionicons name="bookmark-outline" size={17} color={theme.textMuted} />
+                </TouchableOpacity>
+              )}
+
+              {onDelete && (
+                <>
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => setShowDeleteModal(true)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Ionicons name="trash-outline" size={17} color={theme.textMuted} />
+                  </TouchableOpacity>
+
+                  <ConfirmModal
+                    visible={showDeleteModal}
+                    title="Delete Track"
+                    message={`Are you sure you want to remove "${track.title}" from your offline library?`}
+                    icon="trash-outline"
+                    confirmText="Delete"
+                    isDestructive={true}
+                    onConfirm={() => {
+                      setShowDeleteModal(false);
+                      onDelete(track.id);
+                    }}
+                    onCancel={() => setShowDeleteModal(false)}
+                  />
+                </>
+              )}
+            </>
+          )}
+
+          {/* Selection Mode: 6-dot Drag Handle with Pan Gesture */}
+          {selectionMode && onMoveTrack && (
+            <GestureDetector gesture={panGesture}>
+              <View
+                style={styles.dragHandle}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                accessibilityLabel="Drag to reorder track"
+              >
+                <MaterialIcons name="drag-indicator" size={22} color={theme.textSecondary} />
+              </View>
+            </GestureDetector>
+          )}
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
   );
 }

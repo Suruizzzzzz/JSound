@@ -45,6 +45,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       sync_status TEXT DEFAULT 'synced',
       sync_version INTEGER NOT NULL DEFAULT 1,
       is_synced INTEGER NOT NULL DEFAULT 0,
+      is_public INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -109,6 +110,12 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
 
   try {
     await db.execAsync('ALTER TABLE playlist_tracks ADD COLUMN added_at TEXT;');
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync('ALTER TABLE playlists ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;');
   } catch {
     // Column already exists, safe to ignore
   }
@@ -224,17 +231,30 @@ export async function setPlaylistShareCode(
   );
 }
 
+export async function updatePlaylistPublicStatus(
+  playlistId: string,
+  isPublic: boolean
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'UPDATE playlists SET is_public = ?, sync_version = COALESCE(sync_version, 1) + 1 WHERE id = ?',
+    [isPublic ? 1 : 0, playlistId]
+  );
+}
+
 export async function createPlaylist(
   name: string,
   coverUri?: string | null,
   shareCode?: string | null,
   customId?: string,
-  userId: string = 'local_guest'
+  userId: string = 'local_guest',
+  isPublic: boolean | number = 0
 ): Promise<Playlist> {
   const db = await getDatabase();
   const id = customId || `pl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const now = new Date().toISOString();
   const cleanName = name.trim() || 'Untitled Playlist';
+  const publicFlag = isPublic ? 1 : 0;
   const playlist: Playlist = {
     id,
     user_id: userId,
@@ -244,13 +264,14 @@ export async function createPlaylist(
     sync_status: 'synced',
     sync_version: 1,
     is_synced: 0,
+    is_public: publicFlag,
     created_at: now,
     track_count: 0,
   };
 
   await db.runAsync(
-    `INSERT OR REPLACE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       playlist.id,
       playlist.user_id,
@@ -260,6 +281,7 @@ export async function createPlaylist(
       playlist.sync_status ?? 'synced',
       playlist.sync_version ?? 1,
       0,
+      playlist.is_public ?? 0,
       playlist.created_at,
     ]
   );

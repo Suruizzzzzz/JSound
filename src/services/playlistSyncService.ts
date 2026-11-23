@@ -11,6 +11,7 @@ import {
   getAllPlaylists,
   getPlaylistTracks,
   setPlaylistShareCode,
+  updatePlaylistPublicStatus,
   upsertPlaylistTrack,
   getAllPlaylistTracksRaw,
   addTrackToPlaylist,
@@ -25,6 +26,7 @@ export interface SharedPlaylistData {
   share_code: string;
   created_at: string;
   tracks: Track[];
+  is_public?: boolean;
 }
 
 export interface SharePlaylistResult {
@@ -51,16 +53,23 @@ function generateShareCode(): string {
  */
 export function normalizeShareCode(input: string): string {
   let cleaned = input.trim();
+  // Strip query parameters (?...) and hash (#...)
+  cleaned = cleaned.replace(/[?#].*$/, '');
   // Strip protocol / deep link prefixes
   cleaned = cleaned.replace(/^jstream:\/\/playlist\//i, '');
-  cleaned = cleaned.replace(/^https?:\/\/.*\/playlist\//i, '');
-  // Remove spaces or dashes and re-format
-  cleaned = cleaned.toUpperCase().trim();
+  cleaned = cleaned.replace(/^https?:\/\/[^/]+\/playlist\//i, '');
+  // Strip trailing slashes
+  cleaned = cleaned.replace(/\/+$/, '');
+  // Remove all whitespace
+  cleaned = cleaned.replace(/\s+/g, '').toUpperCase().trim();
+  // Normalize JST-XXXX or bare 4-char code
   if (cleaned.startsWith('JST-')) {
-    return cleaned;
+    const codePart = cleaned.replace(/^JST-/, '').replace(/[^A-Z0-9]/g, '');
+    return `JST-${codePart}`;
   }
-  if (cleaned.length === 4) {
-    return `JST-${cleaned}`;
+  const cleanAlphanumeric = cleaned.replace(/[^A-Z0-9]/g, '');
+  if (cleanAlphanumeric.length === 4) {
+    return `JST-${cleanAlphanumeric}`;
   }
   return cleaned;
 }
@@ -128,6 +137,7 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
             ? p.cover_uri
             : null,
         share_code: p.share_code || null,
+        is_public: p.is_public === 1,
         updated_at: new Date().toISOString(),
       }));
 
@@ -177,7 +187,8 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
             rPl.cover_url,
             rPl.share_code,
             rPl.id,
-            userId
+            userId,
+            rPl.is_public ? 1 : 0
           );
         }
       }
@@ -352,9 +363,12 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
           .upsert(payloadWithYt, { onConflict: 'user_id, id' });
         if (ytErr) throw ytErr;
       } catch {
-        await supabase
+        const { error: trkErr } = await supabase
           .from('user_tracks')
           .upsert(tracksPayload, { onConflict: 'user_id, id' });
+        if (trkErr) {
+          throw new Error(`Failed to upload track metadata: ${trkErr.message}`);
+        }
       }
     }
 
@@ -371,6 +385,7 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
             ? target.cover_uri
             : null,
         share_code: shareCode,
+        is_public: target.is_public === 1,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'id' }
@@ -380,7 +395,30 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
       throw new Error(`Cloud playlist share failed: ${plError.message}`);
     }
 
-    // 5. Upsert playlist track links to Supabase user_playlist_tracks
+    // 5. Sync playlist track links to Supabase user_playlist_tracks
+    // First delete any tracks removed locally from this playlist:
+    const currentTrackIds = new Set(tracks.map((t) => t.id));
+    const { data: existingPt, error: fetchPtErr } = await supabase
+      .from('user_playlist_tracks')
+      .select('track_id')
+      .eq('playlist_id', target.id);
+
+    if (!fetchPtErr && existingPt) {
+      const toDelete = existingPt
+        .map((r) => r.track_id)
+        .filter((tid) => !currentTrackIds.has(tid));
+      if (toDelete.length > 0) {
+        const { error: delErr } = await supabase
+          .from('user_playlist_tracks')
+          .delete()
+          .eq('playlist_id', target.id)
+          .in('track_id', toDelete);
+        if (delErr) {
+          console.warn('Warning deleting removed tracks from cloud playlist:', delErr.message);
+        }
+      }
+    }
+
     if (tracks.length > 0) {
       const ptPayload = tracks.map((t, index) => ({
         playlist_id: target.id,
@@ -390,9 +428,13 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
         added_at: new Date().toISOString(),
       }));
 
-      await supabase
+      const { error: uptErr } = await supabase
         .from('user_playlist_tracks')
         .upsert(ptPayload, { onConflict: 'playlist_id, track_id' });
+
+      if (uptErr) {
+        throw new Error(`Failed to sync playlist tracks to cloud: ${uptErr.message}`);
+      }
     }
 
     // 6. Generate share URL and copy to clipboard
@@ -414,6 +456,145 @@ export async function sharePlaylist(playlistId: string): Promise<SharePlaylistRe
 }
 
 /**
+ * Background auto-sync helper for playlists that already have a share_code.
+ * If the user is authenticated and the playlist has a share_code, re-runs sharePlaylist()
+ * to keep cloud tracks and relationships up to date without interrupting the user.
+ */
+export async function syncSharedPlaylistTracks(playlistId: string): Promise<void> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user) return;
+
+    const playlists = await getAllPlaylists();
+    const target = playlists.find((p) => p.id === playlistId);
+    if (!target || !target.share_code) return;
+
+    await sharePlaylist(playlistId);
+  } catch (err) {
+    console.warn('[SyncSharedPlaylist] Background sync error:', err);
+  }
+}
+
+/**
+ * Toggle a playlist's public discovery status in local SQLite and Supabase.
+ */
+export async function togglePlaylistPublic(
+  playlistId: string,
+  isPublic: boolean
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await updatePlaylistPublicStatus(playlistId, isPublic);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (session?.user) {
+      const { error } = await supabase
+        .from('user_playlists')
+        .update({ is_public: isPublic, updated_at: new Date().toISOString() })
+        .eq('id', playlistId);
+      if (error) {
+        console.warn('Failed to update playlist public status in Supabase:', error.message);
+      }
+    }
+    return { success: true };
+  } catch (err: any) {
+    console.error('Failed to toggle playlist public status:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Fetch public community playlists for discovery.
+ */
+export async function fetchPublicPlaylists(limit = 30): Promise<SharedPlaylistData[]> {
+  try {
+    const { data: playlists, error } = await supabase
+      .from('user_playlists')
+      .select('id, name, cover_url, share_code, created_at, is_public')
+      .eq('is_public', true)
+      .not('share_code', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error || !playlists) {
+      console.warn('Failed to fetch public playlists:', error?.message);
+      return [];
+    }
+
+    const playlistIds = playlists.map((p) => p.id);
+    if (playlistIds.length === 0) return [];
+
+    const { data: ptRows } = await supabase
+      .from('user_playlist_tracks')
+      .select('playlist_id, track_id, sort_order')
+      .in('playlist_id', playlistIds)
+      .order('sort_order', { ascending: true });
+
+    const trackIds = Array.from(new Set((ptRows || []).map((pt) => pt.track_id)));
+    let trackMap = new Map<string, any>();
+    if (trackIds.length > 0) {
+      const { data: trackData } = await supabase
+        .from('user_tracks')
+        .select('id, title, artist, duration, artwork_url, youtube_id')
+        .in('id', trackIds);
+      if (trackData) {
+        trackMap = new Map(trackData.map((t) => [t.id, t]));
+      }
+    }
+
+    const result: SharedPlaylistData[] = [];
+    for (const pl of playlists) {
+      const relatedPt = (ptRows || []).filter((pt) => pt.playlist_id === pl.id);
+      const plTracks: Track[] = [];
+      for (const pt of relatedPt) {
+        const t = trackMap.get(pt.track_id);
+        if (t) {
+          const ytId =
+            t.youtube_id ||
+            (t.id?.startsWith('online_youtube_')
+              ? t.id.replace('online_youtube_', '')
+              : t.id?.startsWith('yt_')
+              ? t.id.replace('yt_', '')
+              : null);
+          plTracks.push({
+            id: ytId ? `online_youtube_${ytId}` : t.id,
+            user_id: 'local_guest',
+            youtube_id: ytId,
+            title: t.title,
+            artist: t.artist || 'Unknown Artist',
+            local_audio_uri: '',
+            local_artwork_uri: t.artwork_url || null,
+            duration: t.duration || 0,
+            source: 'youtube',
+            is_synced: 0,
+            created_at: pl.created_at,
+          });
+        }
+      }
+
+      result.push({
+        id: pl.id,
+        name: pl.name,
+        cover_url: pl.cover_url,
+        share_code: pl.share_code,
+        created_at: pl.created_at,
+        tracks: plTracks,
+        is_public: true,
+      });
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('Error in fetchPublicPlaylists:', err);
+    return [];
+  }
+}
+
+/**
  * Fetch a shared playlist and its track metadata from Supabase by share code.
  * Readable by anyone (including unauthenticated guests) due to public RLS policies.
  */
@@ -423,7 +604,7 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
   // 1. Fetch playlist metadata
   const { data: playlist, error: pError } = await supabase
     .from('user_playlists')
-    .select('id, name, cover_url, share_code, created_at')
+    .select('id, name, cover_url, share_code, created_at, is_public')
     .eq('share_code', code)
     .maybeSingle();
 
@@ -504,6 +685,7 @@ export async function fetchSharedPlaylist(rawCode: string): Promise<SharedPlayli
     share_code: playlist.share_code,
     created_at: playlist.created_at,
     tracks,
+    is_public: Boolean(playlist.is_public),
   };
 }
 
@@ -519,7 +701,10 @@ export async function importSharedPlaylist(
   const localPlaylist = await createPlaylist(
     shared.name,
     shared.cover_url,
-    shared.share_code
+    shared.share_code,
+    undefined,
+    'local_guest',
+    shared.is_public ? 1 : 0
   );
 
   // 2. Query existing SQLite tracks to prevent duplicate tracks and re-downloading

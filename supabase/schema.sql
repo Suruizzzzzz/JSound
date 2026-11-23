@@ -60,12 +60,14 @@ create table if not exists public.user_playlists (
   description text,
   cover_url text,
   share_code text unique,
+  is_public boolean default false,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 
 create index if not exists idx_user_playlists_user on public.user_playlists(user_id);
 create index if not exists idx_user_playlists_share_code on public.user_playlists(share_code);
+create index if not exists idx_user_playlists_public on public.user_playlists(is_public) where is_public = true;
 
 -- 4. User Playlist Tracks Table
 create table if not exists public.user_playlist_tracks (
@@ -120,7 +122,7 @@ create policy "Users can select own tracks"
       select 1 from public.user_playlist_tracks pt
       join public.user_playlists p on p.id = pt.playlist_id
       where pt.track_id = user_tracks.id
-      and p.share_code is not null
+      and (p.share_code is not null or p.is_public = true)
     )
   );
 
@@ -143,7 +145,7 @@ create policy "Users can delete own tracks"
 drop policy if exists "Users can select own playlists" on public.user_playlists;
 create policy "Users can select own playlists"
   on public.user_playlists for select
-  using (auth.uid() = user_id or share_code is not null);
+  using (auth.uid() = user_id or share_code is not null or is_public = true);
 
 drop policy if exists "Users can insert own playlists" on public.user_playlists;
 create policy "Users can insert own playlists"
@@ -169,7 +171,7 @@ create policy "Users can select own playlist tracks"
     or exists (
       select 1 from public.user_playlists
       where id = user_playlist_tracks.playlist_id
-      and share_code is not null
+      and (share_code is not null or is_public = true)
     )
   );
 

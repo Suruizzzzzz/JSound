@@ -363,7 +363,12 @@ export default function NowPlayingModal() {
               </View>
             )}
             {repeatMode === 'all' && (
-              <View style={styles.activeDot} />
+              <>
+                <View style={styles.repeatAllBadge}>
+                  <Text style={styles.repeatAllText}>ALL</Text>
+                </View>
+                <View style={styles.activeDot} />
+              </>
             )}
           </TouchableOpacity>
         </View>

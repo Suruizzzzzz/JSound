@@ -327,3 +327,26 @@ export function updateAudioMetadata(metadata: AudioMetadata): void {
 export function getCurrentPlayer(): AudioPlayer | null {
   return playerInstance;
 }
+
+export function getPlaybackPosition(): { currentTime: number; duration: number } {
+  if (playerInstance) {
+    try {
+      const cur =
+        typeof playerInstance.currentTime === 'number' &&
+        !isNaN(playerInstance.currentTime) &&
+        playerInstance.currentTime >= 0
+          ? playerInstance.currentTime
+          : 0;
+      const dur =
+        typeof playerInstance.duration === 'number' &&
+        !isNaN(playerInstance.duration) &&
+        playerInstance.duration > 0
+          ? playerInstance.duration
+          : 0;
+      return { currentTime: cur, duration: dur };
+    } catch {
+      return { currentTime: 0, duration: 0 };
+    }
+  }
+  return { currentTime: 0, duration: 0 };
+}

@@ -8,6 +8,7 @@ import {
   seekAudio,
   stopAndUnloadAudio,
   updateAudioMetadata,
+  getPlaybackPosition,
 } from '@/services/audioService';
 
 export interface PlaybackContext {
@@ -59,6 +60,46 @@ interface PlayerState {
 }
 
 let sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
+let progressIntervalHandle: ReturnType<typeof setInterval> | null = null;
+
+function startProgressPolling() {
+  if (progressIntervalHandle) return;
+  progressIntervalHandle = setInterval(() => {
+    const state = usePlayerStore.getState();
+    if (!state.isPlaying) {
+      stopProgressPolling();
+      return;
+    }
+
+    const pos = getPlaybackPosition();
+    const fallbackDur =
+      state.currentTrack?.duration && state.currentTrack.duration > 0
+        ? state.currentTrack.duration
+        : 0;
+    const duration = pos.duration > 0 ? pos.duration : fallbackDur;
+
+    if (pos.currentTime >= 0) {
+      usePlayerStore.setState((prev) => {
+        const nextPos = pos.currentTime > 0 || prev.position < 1 ? pos.currentTime : prev.position;
+        const nextDur = duration > 0 ? duration : prev.duration;
+        if (Math.abs(prev.position - nextPos) < 0.05 && prev.duration === nextDur) {
+          return prev;
+        }
+        return {
+          position: nextPos,
+          duration: nextDur,
+        };
+      });
+    }
+  }, 250);
+}
+
+function stopProgressPolling() {
+  if (progressIntervalHandle) {
+    clearInterval(progressIntervalHandle);
+    progressIntervalHandle = null;
+  }
+}
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   tracks: [],
@@ -90,7 +131,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   cycleRepeatMode: () => {
     set((state) => {
-      const modes: RepeatMode[] = ['off', 'all', 'one'];
+      const modes: RepeatMode[] = ['off', 'one', 'all'];
       const nextIndex = (modes.indexOf(state.repeatMode) + 1) % modes.length;
       return { repeatMode: modes[nextIndex] };
     });
@@ -411,3 +452,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 }));
+
+usePlayerStore.subscribe((state, prevState) => {
+  if (state.isPlaying && !prevState.isPlaying) {
+    startProgressPolling();
+  } else if (!state.isPlaying && prevState.isPlaying) {
+    stopProgressPolling();
+  }
+});

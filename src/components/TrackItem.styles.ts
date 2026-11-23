@@ -15,6 +15,16 @@ export const createStyles = (theme: ThemeColors) =>
     activeContainer: {
       backgroundColor: theme.surfaceElevated,
     },
+    selectedContainer: {
+      backgroundColor: theme.surfaceElevated,
+      borderWidth: 1,
+      borderColor: theme.primary + '55',
+    },
+    selectionCheckbox: {
+      marginRight: 10,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
     artworkContainer: {
       width: 44,
       height: 44,
@@ -86,28 +96,10 @@ export const createStyles = (theme: ThemeColors) =>
       gap: 6,
     },
     dragHandle: {
-      paddingHorizontal: 8,
+      paddingHorizontal: 6,
       paddingVertical: 6,
       justifyContent: 'center',
       alignItems: 'center',
-    },
-    reorderControlsRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      marginLeft: 4,
-    },
-    reorderArrowBtn: {
-      padding: 6,
-      borderRadius: 6,
-      backgroundColor: theme.surfaceElevated,
-      borderWidth: 1,
-      borderColor: theme.border,
-      justifyContent: 'center',
-      alignItems: 'center',
-    },
-    reorderArrowDisabled: {
-      opacity: 0.25,
     },
     downloadProgressContainer: {
       flexDirection: 'row',

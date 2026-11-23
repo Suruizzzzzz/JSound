@@ -298,4 +298,21 @@ export const createStyles = (theme: ThemeColors) =>
       fontWeight: '900',
       color: theme.onPrimary,
     },
+    repeatAllBadge: {
+      position: 'absolute',
+      top: 1,
+      right: -2,
+      paddingHorizontal: 3,
+      height: 11,
+      borderRadius: 5,
+      backgroundColor: theme.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    repeatAllText: {
+      fontSize: 7,
+      fontWeight: '900',
+      letterSpacing: -0.2,
+      color: theme.onPrimary,
+    },
   });
