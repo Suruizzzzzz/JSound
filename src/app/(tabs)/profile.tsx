@@ -72,7 +72,6 @@ export default function ProfileScreen() {
   const syncCurrentIndex = useSyncProgressStore((state) => state.currentIndex);
   const syncTotalCount = useSyncProgressStore((state) => state.totalCount);
   const syncCurrentTitle = useSyncProgressStore((state) => state.currentTitle);
-  const syncProgressPct = useSyncProgressStore((state) => state.currentProgress);
   const cancelSyncDownload = useSyncProgressStore((state) => state.cancelSyncDownload);
   const showSyncHistoryModal = useSyncProgressStore((state) => state.showSyncHistoryModal);
   const syncedTracks = useSyncProgressStore((state) => state.syncedTracks);
@@ -455,7 +454,7 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
             <Text style={styles.liveDownloadBannerSub} numberOfLines={1}>
-              {syncCurrentTitle || 'Preparing track...'} • {syncProgressPct}%
+              {syncCurrentTitle || 'Preparing track...'}
             </Text>
             <View style={styles.progressBarTrack}>
               <View
@@ -464,10 +463,16 @@ export default function ProfileScreen() {
                   {
                     width: `${
                       syncTotalCount > 0
-                        ? Math.round(
-                            ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                        ? Math.min(
+                            100,
+                            Math.max(
+                              8,
+                              Math.round(
+                                ((syncCurrentIndex - 0.5) / syncTotalCount) * 100
+                              )
+                            )
                           )
-                        : 0
+                        : 8
                     }%`,
                   },
                 ]}
@@ -814,7 +819,7 @@ export default function ProfileScreen() {
             {syncDownloading && (
               <View style={[styles.liveDownloadBanner, { marginBottom: 12, padding: 8 }]}>
                 <Text style={styles.liveDownloadBannerTitle}>
-                  Downloading {syncCurrentIndex}/{syncTotalCount}: {syncCurrentTitle} ({syncProgressPct}%)
+                  Downloading {syncCurrentIndex}/{syncTotalCount}: {syncCurrentTitle || 'Preparing track...'}
                 </Text>
                 <View style={[styles.progressBarTrack, { marginTop: 4 }]}>
                   <View
@@ -823,10 +828,16 @@ export default function ProfileScreen() {
                       {
                         width: `${
                           syncTotalCount > 0
-                            ? Math.round(
-                                ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                            ? Math.min(
+                                100,
+                                Math.max(
+                                  8,
+                                  Math.round(
+                                    ((syncCurrentIndex - 0.5) / syncTotalCount) * 100
+                                  )
+                                )
                               )
-                            : 0
+                            : 8
                         }%`,
                       },
                     ]}

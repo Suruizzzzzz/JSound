@@ -274,7 +274,6 @@ export default function LibraryScreen() {
   const syncCurrentIndex = useSyncProgressStore((state) => state.currentIndex);
   const syncTotalCount = useSyncProgressStore((state) => state.totalCount);
   const syncCurrentTitle = useSyncProgressStore((state) => state.currentTitle);
-  const syncProgressPct = useSyncProgressStore((state) => state.currentProgress);
   const cancelSyncDownload = useSyncProgressStore((state) => state.cancelSyncDownload);
 
   // Selected Playlist Cover Action Modal State
@@ -1576,7 +1575,7 @@ export default function LibraryScreen() {
                 )}
               </View>
 
-              {/* Button Row: Play All + (Add Songs if owner) + Share */}
+              {/* Button Layout: Row 1 = Full-width Play All, Row 2 = Add Songs + Share side-by-side */}
               <View style={styles.playlistHeroButtonRow}>
                 <TouchableOpacity
                   style={styles.playlistHeroPlayAllBtn}
@@ -1588,32 +1587,34 @@ export default function LibraryScreen() {
                   <Text style={styles.playlistHeroPlayAllText}>Play All</Text>
                 </TouchableOpacity>
 
-                {!isImported && (
+                <View style={styles.playlistHeroSecondaryRow}>
+                  {!isImported && (
+                    <TouchableOpacity
+                      style={styles.playlistHeroShareBtn}
+                      onPress={handleOpenAddSongsModal}
+                      activeOpacity={0.7}
+                      accessibilityLabel="Add songs to playlist"
+                    >
+                      <Ionicons name="add-circle-outline" size={17} color={theme.textPrimary} />
+                      <Text style={styles.playlistHeroShareText}>Add Songs</Text>
+                    </TouchableOpacity>
+                  )}
+
                   <TouchableOpacity
                     style={styles.playlistHeroShareBtn}
-                    onPress={handleOpenAddSongsModal}
+                    onPress={handleSharePlaylist}
                     activeOpacity={0.7}
-                    accessibilityLabel="Add songs to playlist"
+                    disabled={isSharingPlaylist}
+                    accessibilityLabel="Share playlist"
                   >
-                    <Ionicons name="add-circle-outline" size={17} color={theme.textPrimary} />
-                    <Text style={styles.playlistHeroShareText}>Add Songs</Text>
+                    {isSharingPlaylist ? (
+                      <ActivityIndicator size="small" color={theme.textPrimary} />
+                    ) : (
+                      <Ionicons name="share-social-outline" size={17} color={theme.textPrimary} />
+                    )}
+                    <Text style={styles.playlistHeroShareText}>Share</Text>
                   </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={styles.playlistHeroShareBtn}
-                  onPress={handleSharePlaylist}
-                  activeOpacity={0.7}
-                  disabled={isSharingPlaylist}
-                  accessibilityLabel="Share playlist"
-                >
-                  {isSharingPlaylist ? (
-                    <ActivityIndicator size="small" color={theme.textPrimary} />
-                  ) : (
-                    <Ionicons name="share-social-outline" size={17} color={theme.textPrimary} />
-                  )}
-                  <Text style={styles.playlistHeroShareText}>Share</Text>
-                </TouchableOpacity>
+                </View>
               </View>
 
               {/* Filter tracks search bar (shown if > 8 tracks or query is active) */}
@@ -1821,7 +1822,7 @@ export default function LibraryScreen() {
             </TouchableOpacity>
           </View>
           <Text style={styles.liveDownloadBannerSub} numberOfLines={1}>
-            {syncCurrentTitle || 'Preparing track...'} • {syncProgressPct}%
+            {syncCurrentTitle || 'Preparing track...'}
           </Text>
           <View style={styles.progressBarTrack}>
             <View
@@ -1830,10 +1831,16 @@ export default function LibraryScreen() {
                 {
                   width: `${
                     syncTotalCount > 0
-                      ? Math.round(
-                          ((syncCurrentIndex - 1 + syncProgressPct / 100) / syncTotalCount) * 100
+                      ? Math.min(
+                          100,
+                          Math.max(
+                            8,
+                            Math.round(
+                              ((syncCurrentIndex - 0.5) / syncTotalCount) * 100
+                            )
+                          )
                         )
-                      : 0
+                      : 8
                   }%`,
                 },
               ]}

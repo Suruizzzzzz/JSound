@@ -710,9 +710,13 @@ export const createStyles = (theme: ThemeColors) =>
       color: theme.textSecondary,
     },
     playlistHeroButtonRow: {
+      flexDirection: 'column',
+      gap: 10,
+      width: '100%',
+    },
+    playlistHeroSecondaryRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
       gap: 10,
       width: '100%',
     },
@@ -741,13 +745,13 @@ export const createStyles = (theme: ThemeColors) =>
       padding: 4,
     },
     playlistHeroPlayAllBtn: {
-      flex: 1,
+      width: '100%',
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
       backgroundColor: theme.primary,
-      paddingVertical: 12,
+      paddingVertical: 13,
       borderRadius: 24,
     },
     playlistHeroPlayAllText: {

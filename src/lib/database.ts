@@ -74,14 +74,14 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_playlists_id ON playlists (id);
 
     CREATE TABLE IF NOT EXISTS playlist_tracks (
-      id TEXT PRIMARY KEY NOT NULL,
+      id TEXT,
       playlist_id TEXT NOT NULL,
       track_id TEXT NOT NULL,
       position INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
+      created_at TEXT,
       added_at TEXT,
-      FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
+      PRIMARY KEY (playlist_id, track_id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks (playlist_id);
@@ -234,6 +234,68 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     }
   } catch (migErr) {
     console.warn('Playlists composite PK migration warning:', migErr);
+  }
+
+  // Check and migrate playlist_tracks table to remove foreign key references
+  try {
+    let hasForeignKey = false;
+    try {
+      const fkList = await db.getAllAsync<{ table: string }>('PRAGMA foreign_key_list(playlist_tracks);');
+      if (fkList && fkList.length > 0) {
+        hasForeignKey = true;
+      }
+    } catch {
+      // ignore
+    }
+
+    if (!hasForeignKey) {
+      try {
+        const tableDef = await db.getFirstAsync<{ sql: string }>(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='playlist_tracks';"
+        );
+        if (tableDef?.sql && /REFERENCES/i.test(tableDef.sql)) {
+          hasForeignKey = true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (hasForeignKey) {
+      const ptCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(playlist_tracks);');
+      const ptColNames = new Set(ptCols.map((c) => c.name));
+
+      const idExpr = ptColNames.has('id') ? "COALESCE(id, 'pt_' || playlist_id || '_' || track_id)" : "'pt_' || playlist_id || '_' || track_id";
+      const posExpr = ptColNames.has('position') ? 'COALESCE(position, 0)' : '0';
+      const sortExpr = ptColNames.has('sort_order') ? 'COALESCE(sort_order, 0)' : '0';
+      const createdExpr = ptColNames.has('created_at') ? "COALESCE(created_at, datetime('now'))" : "datetime('now')";
+      const addedExpr = ptColNames.has('added_at') ? "COALESCE(added_at, datetime('now'))" : "datetime('now')";
+
+      await db.execAsync(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE playlist_tracks_new (
+          id TEXT,
+          playlist_id TEXT NOT NULL,
+          track_id TEXT NOT NULL,
+          position INTEGER NOT NULL DEFAULT 0,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT,
+          added_at TEXT,
+          PRIMARY KEY (playlist_id, track_id)
+        );
+        INSERT OR IGNORE INTO playlist_tracks_new (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+        SELECT ${idExpr}, playlist_id, track_id, ${posExpr}, ${sortExpr}, ${createdExpr}, ${addedExpr}
+        FROM playlist_tracks;
+        DROP TABLE playlist_tracks;
+        ALTER TABLE playlist_tracks_new RENAME TO playlist_tracks;
+        CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks (playlist_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_track_unique ON playlist_tracks (playlist_id, track_id);
+        PRAGMA foreign_keys = ON;
+      `);
+      console.log('✓ Successfully rebuilt playlist_tracks table without foreign key constraints');
+    }
+  } catch (ptMigErr) {
+    console.warn('playlist_tracks foreign key removal migration warning:', ptMigErr);
   }
 
   // Ensure unique indexes exist unconditionally for ON CONFLICT(user_id, id) matching
