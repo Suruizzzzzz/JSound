@@ -25,7 +25,15 @@
         "WAKE_LOCK",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "predictiveBackGestureEnabled": false
     },
@@ -75,8 +83,9 @@
         }
       },
       "eas": {
-        "projectId": "4922dc1b-ede1-45ee-a73f-c5b02ae8d6e3"
+        "projectId": "be8e0e6e-f305-457c-b632-d282fb199aef"
       }
-    }
+    },
+    "owner": "joshyyyyyyyyyyyyyyy"
   }
 }

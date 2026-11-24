@@ -1,9 +1,12 @@
 import * as SecureStore from 'expo-secure-store';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 
 export const ExpoSecureStoreAdapter = {
   getItem: (key: string): Promise<string | null> => {
+    if (typeof window === 'undefined') {
+      return Promise.resolve(null);
+    }
     if (Platform.OS === 'web') {
       try {
         if (typeof localStorage !== 'undefined') {
@@ -14,9 +17,16 @@ export const ExpoSecureStoreAdapter = {
       }
       return Promise.resolve(null);
     }
-    return SecureStore.getItemAsync(key);
+    try {
+      return SecureStore.getItemAsync(key);
+    } catch {
+      return Promise.resolve(null);
+    }
   },
   setItem: (key: string, value: string): Promise<void> => {
+    if (typeof window === 'undefined') {
+      return Promise.resolve();
+    }
     if (Platform.OS === 'web') {
       try {
         if (typeof localStorage !== 'undefined') {
@@ -27,9 +37,16 @@ export const ExpoSecureStoreAdapter = {
       }
       return Promise.resolve();
     }
-    return SecureStore.setItemAsync(key, value);
+    try {
+      return SecureStore.setItemAsync(key, value);
+    } catch {
+      return Promise.resolve();
+    }
   },
   removeItem: (key: string): Promise<void> => {
+    if (typeof window === 'undefined') {
+      return Promise.resolve();
+    }
     if (Platform.OS === 'web') {
       try {
         if (typeof localStorage !== 'undefined') {
@@ -40,18 +57,32 @@ export const ExpoSecureStoreAdapter = {
       }
       return Promise.resolve();
     }
-    return SecureStore.deleteItemAsync(key);
+    try {
+      return SecureStore.deleteItemAsync(key);
+    } catch {
+      return Promise.resolve();
+    }
   },
 };
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+const isServer = typeof window === 'undefined';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+const rawUrl = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim();
+const rawKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim();
+
+const supabaseUrl =
+  rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))
+    ? rawUrl
+    : 'https://placeholder.supabase.co';
+
+const supabaseAnonKey = rawKey || 'placeholder-anon-key';
+
+export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: ExpoSecureStoreAdapter,
-    autoRefreshToken: true,
-    persistSession: true,
+    storage: isServer ? undefined : ExpoSecureStoreAdapter,
+    autoRefreshToken: !isServer,
+    persistSession: !isServer,
     detectSessionInUrl: false,
   },
 });
+
