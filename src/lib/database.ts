@@ -91,9 +91,6 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_user_id_id ON tracks (user_id, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_id_id ON playlists (user_id, id);
   `);
 
   try {
@@ -120,11 +117,28 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     // Column already exists, safe to ignore
   }
 
-  // Check and migrate tracks table to composite PRIMARY KEY (user_id, id) if currently standalone id PK
+  // Check and migrate tracks table to composite PRIMARY KEY (user_id, id) if currently standalone id PK or has unique index on id alone
   try {
     const tracksInfo = await db.getAllAsync<{ name: string; pk: number }>('PRAGMA table_info(tracks);');
     const isTracksCompositePk = tracksInfo.filter((c) => c.pk > 0).length >= 2;
-    if (!isTracksCompositePk && tracksInfo.length > 0) {
+
+    let hasTracksSingleIdUnique = false;
+    try {
+      const idxList = await db.getAllAsync<{ name: string; unique: number }>('PRAGMA index_list(tracks);');
+      for (const idx of idxList) {
+        if (idx.unique === 1) {
+          const idxCols = await db.getAllAsync<{ name: string }>(`PRAGMA index_info("${idx.name}");`);
+          if (idxCols.length === 1 && idxCols[0].name === 'id') {
+            hasTracksSingleIdUnique = true;
+            break;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if ((!isTracksCompositePk || hasTracksSingleIdUnique) && tracksInfo.length > 0) {
       await db.execAsync(`
         PRAGMA foreign_keys = OFF;
         CREATE TABLE tracks_new (
@@ -159,17 +173,34 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_user_id_id ON tracks (user_id, id);
         PRAGMA foreign_keys = ON;
       `);
-      console.log('✓ Migrated tracks to composite PRIMARY KEY (user_id, id)');
+      console.log('✓ Successfully rebuilt tracks table with composite PRIMARY KEY (user_id, id)');
     }
   } catch (migErr) {
     console.warn('Tracks composite PK migration warning:', migErr);
   }
 
-  // Check and migrate playlists table to composite PRIMARY KEY (user_id, id) if currently standalone id PK
+  // Check and migrate playlists table to composite PRIMARY KEY (user_id, id) if currently standalone id PK or has unique index on id alone
   try {
     const playlistsInfo = await db.getAllAsync<{ name: string; pk: number }>('PRAGMA table_info(playlists);');
     const isPlaylistsCompositePk = playlistsInfo.filter((c) => c.pk > 0).length >= 2;
-    if (!isPlaylistsCompositePk && playlistsInfo.length > 0) {
+
+    let hasPlaylistsSingleIdUnique = false;
+    try {
+      const plIdxList = await db.getAllAsync<{ name: string; unique: number }>('PRAGMA index_list(playlists);');
+      for (const idx of plIdxList) {
+        if (idx.unique === 1) {
+          const idxCols = await db.getAllAsync<{ name: string }>(`PRAGMA index_info("${idx.name}");`);
+          if (idxCols.length === 1 && idxCols[0].name === 'id') {
+            hasPlaylistsSingleIdUnique = true;
+            break;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if ((!isPlaylistsCompositePk || hasPlaylistsSingleIdUnique) && playlistsInfo.length > 0) {
       await db.execAsync(`
         PRAGMA foreign_keys = OFF;
         CREATE TABLE playlists_new (
@@ -199,7 +230,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_id_id ON playlists (user_id, id);
         PRAGMA foreign_keys = ON;
       `);
-      console.log('✓ Migrated playlists to composite PRIMARY KEY (user_id, id)');
+      console.log('✓ Successfully rebuilt playlists table with composite PRIMARY KEY (user_id, id)');
     }
   } catch (migErr) {
     console.warn('Playlists composite PK migration warning:', migErr);
@@ -279,6 +310,16 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
 
   // Safe startup cleanup for empty duplicate imported playlists
   await cleanupDuplicateImportedPlaylists();
+
+  // Auto-migrate any leftover 'local_guest' rows if a logged-in user is active
+  try {
+    const activeUserId = getActiveUserId();
+    if (activeUserId && activeUserId !== 'local_guest') {
+      await claimGuestLibrary(activeUserId);
+    }
+  } catch (claimErr) {
+    console.warn('[Database] Auto-claim guest library startup warning:', claimErr);
+  }
 
   return db;
 }

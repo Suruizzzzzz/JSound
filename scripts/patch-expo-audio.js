@@ -313,22 +313,30 @@ safeWrite(audioControlsServiceKtPath, (content) => {
     }
   }
 
-  // 5g. updateSessionCustomLayout: Ensure Previous / Next buttons always appear when supported
-  if (!content.includes('val showPrev = currentOptions?.showPreviousTrack')) {
-    const prevTarget = `    if (currentOptions?.showPreviousTrack == true && playable?.supportsPreviousTrack == true) {`;
-    const prevReplacement = `    val showPrev = currentOptions?.showPreviousTrack ?: (playable?.supportsPreviousTrack == true)
+  // 5g. updateSessionCustomLayout: Ensure Previous / Next buttons always appear (even on 1-song queue)
+  if (!content.includes('val showPrev = currentOptions?.showPreviousTrack != false')) {
+    const prevPattern1 = `    val showPrev = currentOptions?.showPreviousTrack ?: (playable?.supportsPreviousTrack == true)
     if (showPrev && playable?.supportsPreviousTrack == true) {`;
-    if (content.includes(prevTarget)) {
-      content = content.replace(prevTarget, prevReplacement);
+    const prevPattern2 = `    if (currentOptions?.showPreviousTrack == true && playable?.supportsPreviousTrack == true) {`;
+    const prevReplacement = `    val showPrev = currentOptions?.showPreviousTrack != false
+    if (showPrev) {`;
+    if (content.includes(prevPattern1)) {
+      content = content.replace(prevPattern1, prevReplacement);
+    } else if (content.includes(prevPattern2)) {
+      content = content.replace(prevPattern2, prevReplacement);
     }
   }
 
-  if (!content.includes('val showNext = currentOptions?.showNextTrack')) {
-    const nextTarget = `    if (currentOptions?.showNextTrack == true && playable?.supportsNextTrack == true) {`;
-    const nextReplacement = `    val showNext = currentOptions?.showNextTrack ?: (playable?.supportsNextTrack == true)
+  if (!content.includes('val showNext = currentOptions?.showNextTrack != false')) {
+    const nextPattern1 = `    val showNext = currentOptions?.showNextTrack ?: (playable?.supportsNextTrack == true)
     if (showNext && playable?.supportsNextTrack == true) {`;
-    if (content.includes(nextTarget)) {
-      content = content.replace(nextTarget, nextReplacement);
+    const nextPattern2 = `    if (currentOptions?.showNextTrack == true && playable?.supportsNextTrack == true) {`;
+    const nextReplacement = `    val showNext = currentOptions?.showNextTrack != false
+    if (showNext) {`;
+    if (content.includes(nextPattern1)) {
+      content = content.replace(nextPattern1, nextReplacement);
+    } else if (content.includes(nextPattern2)) {
+      content = content.replace(nextPattern2, nextReplacement);
     }
   }
 
@@ -350,6 +358,55 @@ safeWrite(audioControlsServiceKtPath, (content) => {
       }`;
     if (content.includes(listenerTarget)) {
       content = content.replace(listenerTarget, listenerReplacement);
+    }
+  }
+
+  // 5i. buildNotification: Ensure Previous & Next actions appear on notifications
+  if (content.includes('if (currentOptions?.showPreviousTrack == true && currentPlayable?.supportsPreviousTrack == true) {')) {
+    content = content.replace(
+      'if (currentOptions?.showPreviousTrack == true && currentPlayable?.supportsPreviousTrack == true) {',
+      'if (currentOptions?.showPreviousTrack != false) {'
+    );
+  }
+  if (content.includes('if (currentOptions?.showNextTrack == true && currentPlayable?.supportsNextTrack == true) {')) {
+    content = content.replace(
+      'if (currentOptions?.showNextTrack == true && currentPlayable?.supportsNextTrack == true) {',
+      'if (currentOptions?.showNextTrack != false) {'
+    );
+  }
+
+  // 5j. supportsNextTrack and supportsPreviousTrack always return true for continuous playback / radio
+  if (!content.includes('fun supportsNextTrack(): Boolean = true')) {
+    const target = `  fun nextTrack() {
+    currentPlayable?.takeIf { it.supportsNextTrack }?.nextTrack()
+  }
+
+  fun previousTrack() {
+    currentPlayable?.takeIf { it.supportsPreviousTrack }?.previousTrack()
+  }
+
+  fun supportsNextTrack(): Boolean {
+    return currentPlayable?.supportsNextTrack == true
+  }
+
+  fun supportsPreviousTrack(): Boolean {
+    return currentPlayable?.supportsPreviousTrack == true
+  }`;
+
+    const replacement = `  fun nextTrack() {
+    currentPlayable?.nextTrack()
+  }
+
+  fun previousTrack() {
+    currentPlayable?.previousTrack()
+  }
+
+  fun supportsNextTrack(): Boolean = true
+
+  fun supportsPreviousTrack(): Boolean = true`;
+
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
     }
   }
 
