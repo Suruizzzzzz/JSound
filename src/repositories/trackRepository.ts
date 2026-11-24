@@ -38,9 +38,10 @@ export async function saveTrack(track: Track, userId?: string): Promise<void> {
       source = excluded.source,
       is_synced = excluded.is_synced,
       is_playlist_only = CASE
-        WHEN tracks.is_playlist_only = 0 THEN 0
+        WHEN excluded.is_playlist_only = 1 THEN 1
+        WHEN tracks.is_playlist_only = 1 AND (excluded.local_audio_uri IS NULL OR excluded.local_audio_uri = '') THEN 1
         WHEN excluded.is_playlist_only = 0 THEN 0
-        ELSE 1
+        ELSE tracks.is_playlist_only
       END`,
     [
       track.id,
@@ -83,9 +84,10 @@ export async function saveTracks(tracks: Track[], userId?: string): Promise<void
           source = excluded.source,
           is_synced = excluded.is_synced,
           is_playlist_only = CASE
-            WHEN tracks.is_playlist_only = 0 THEN 0
+            WHEN excluded.is_playlist_only = 1 THEN 1
+            WHEN tracks.is_playlist_only = 1 AND (excluded.local_audio_uri IS NULL OR excluded.local_audio_uri = '') THEN 1
             WHEN excluded.is_playlist_only = 0 THEN 0
-            ELSE 1
+            ELSE tracks.is_playlist_only
           END`,
         [
           track.id,
@@ -193,4 +195,5 @@ export {
   getPlaylistsContainingTrack,
   upsertPlaylistTrack,
   getAllPlaylistTracksRaw,
+  cleanupImportedTracks,
 } from '@/lib/database';

@@ -71,6 +71,174 @@ export function normalizeShareCode(input: string): string {
 }
 
 /**
+ * Push local library tracks to Supabase user_tracks table.
+ * Excludes tracks where is_playlist_only = 1 so imported friend playlist tracks
+ * are NEVER uploaded to the user's personal Supabase tracks table.
+ */
+export async function pushTracksToCloud(
+  userId: string,
+  localTracks?: Track[]
+): Promise<void> {
+  const tracks = localTracks || (await getAllTracks(userId));
+  // Explicitly exclude any tracks where is_playlist_only = 1
+  const tracksToPush = tracks.filter((t) => Number(t.is_playlist_only ?? 0) !== 1);
+
+  if (tracksToPush.length === 0) return;
+
+  const remoteTracksPayload = tracksToPush.map((t) => ({
+    id: t.id,
+    user_id: userId,
+    youtube_id:
+      t.youtube_id ||
+      (t.source === 'youtube'
+        ? t.id.replace(/^online_youtube_/, '').replace(/^track_yt_/, '').replace(/^yt_/, '')
+        : null),
+    title: t.title || 'Unknown Title',
+    artist: t.artist || 'Unknown Artist',
+    duration: Math.round(t.duration || 0),
+    artwork_url:
+      t.local_artwork_uri &&
+      !t.local_artwork_uri.startsWith('file://') &&
+      !t.local_artwork_uri.startsWith('content://')
+        ? t.local_artwork_uri
+        : null,
+    sort_order: t.sort_order ?? 0,
+    is_playlist_only: 0,
+  }));
+
+  // Upsert in batches of 50 to prevent packet size overflow
+  for (let i = 0; i < remoteTracksPayload.length; i += 50) {
+    const batch = remoteTracksPayload.slice(i, i + 50);
+    const { error: trackErr } = await supabase
+      .from('user_tracks')
+      .upsert(batch, { onConflict: 'user_id, id' });
+    if (trackErr) {
+      console.warn('Error syncing tracks batch to cloud, trying fallback schema:', trackErr.message);
+      // Fallback if remote schema hasn't had youtube_id or is_playlist_only migrated yet
+      const strippedBatch = batch.map(({ youtube_id, is_playlist_only, ...rest }: any) => rest);
+      const { error: fallbackErr } = await supabase
+        .from('user_tracks')
+        .upsert(strippedBatch, { onConflict: 'user_id, id' });
+      if (fallbackErr) {
+        console.warn('Fallback sync failed:', fallbackErr.message);
+      }
+    }
+  }
+}
+
+/**
+ * Pull remote tracks metadata into local SQLite.
+ * Passes is_playlist_only: 1 if the track belongs to an imported playlist (is_imported = 1)
+ * or if the remote row has is_playlist_only = true / 1, so Cloud Sync NEVER flips is_playlist_only back to 0.
+ * Ensures Supabase tracks respect is_playlist_only and never inject imported-only tracks into personal All Songs.
+ */
+export async function pullTracksFromCloud(userId: string): Promise<Track[]> {
+  const db = await getDatabase();
+  const { data: remoteTracks, error: pullTrkErr } = await supabase
+    .from('user_tracks')
+    .select('*')
+    .eq('user_id', userId);
+
+  if (pullTrkErr || !remoteTracks) {
+    if (pullTrkErr) console.warn('Error pulling remote tracks from cloud:', pullTrkErr.message);
+    return [];
+  }
+
+  // Get all local tracks from tracks table (including is_playlist_only tracks)
+  const allLocalTracks = await db.getAllAsync<{
+    id: string;
+    is_playlist_only?: number;
+    local_audio_uri?: string;
+  }>('SELECT id, is_playlist_only, local_audio_uri FROM tracks WHERE user_id = ? OR user_id = "local_guest"', [userId]);
+  const localTrackMap = new Map(allLocalTracks.map((t) => [t.id, t]));
+
+  // Get track IDs that belong to imported playlists
+  const importedRows = await db.getAllAsync<{ track_id: string }>(
+    `SELECT DISTINCT pt.track_id
+     FROM playlist_tracks pt
+     JOIN playlists p ON pt.playlist_id = p.id
+     WHERE p.is_imported = 1
+       AND (p.user_id = ? OR p.user_id = 'local_guest')`,
+    [userId]
+  );
+  const importedTrackIds = new Set(importedRows.map((r) => r.track_id));
+
+  // Get track IDs that belong to personal non-imported playlists
+  const personalPlaylistRows = await db.getAllAsync<{ track_id: string }>(
+    `SELECT DISTINCT pt.track_id
+     FROM playlist_tracks pt
+     JOIN playlists p ON pt.playlist_id = p.id
+     WHERE COALESCE(p.is_imported, 0) = 0
+       AND (p.user_id = ? OR p.user_id = 'local_guest')`,
+    [userId]
+  );
+  const personalPlaylistTrackIds = new Set(personalPlaylistRows.map((r) => r.track_id));
+
+  const newTracksToSave: Track[] = [];
+
+  for (const rTrk of remoteTracks) {
+    const localTrack = localTrackMap.get(rTrk.id);
+
+    const isRemotePlaylistOnly = Boolean(
+      rTrk.is_playlist_only === 1 ||
+      rTrk.is_playlist_only === true ||
+      rTrk.is_playlist_only === '1' ||
+      rTrk.is_playlist_only === 'true'
+    );
+    const belongsToImported = importedTrackIds.has(rTrk.id) && !personalPlaylistTrackIds.has(rTrk.id);
+    const isLocallyPlaylistOnly = localTrack?.is_playlist_only === 1;
+
+    const shouldBePlaylistOnly = (isRemotePlaylistOnly || belongsToImported || isLocallyPlaylistOnly) ? 1 : 0;
+
+    if (!localTrack) {
+      newTracksToSave.push({
+        id: rTrk.id,
+        user_id: userId,
+        youtube_id:
+          rTrk.youtube_id ||
+          (rTrk.id.startsWith('track_yt_')
+            ? rTrk.id.replace(/^track_yt_/, '')
+            : rTrk.id.startsWith('yt_')
+            ? rTrk.id.replace(/^yt_/, '')
+            : null),
+        title: rTrk.title,
+        artist: rTrk.artist || 'Unknown Artist',
+        local_audio_uri: '',
+        local_artwork_uri: rTrk.artwork_url || null,
+        duration: rTrk.duration || 0,
+        source: 'youtube',
+        is_synced: 1,
+        created_at: rTrk.created_at || new Date().toISOString(),
+        sort_order: rTrk.sort_order ?? 0,
+        is_playlist_only: shouldBePlaylistOnly,
+      });
+    } else {
+      // Ensure Cloud Sync NEVER flips is_playlist_only back to 0
+      if (shouldBePlaylistOnly === 1 && localTrack.is_playlist_only !== 1) {
+        await db.runAsync(
+          'UPDATE tracks SET is_playlist_only = 1 WHERE id = ? AND (user_id = ? OR user_id = "local_guest")',
+          [rTrk.id, userId]
+        );
+      }
+    }
+  }
+
+  if (newTracksToSave.length > 0) {
+    await saveTracks(newTracksToSave, userId);
+  }
+
+  if (getActiveUserId() === userId) {
+    const updatedTracks = await getAllTracks(userId);
+    usePlayerStore.getState().setTracks(updatedTracks);
+  }
+
+  return newTracksToSave;
+}
+
+export const syncToCloud = syncPlaylistsToCloud;
+export const syncFromCloud = pullTracksFromCloud;
+
+/**
  * Two-way synchronization between local SQLite database and Supabase cloud tables.
  * Safely backs up local tracks and playlists, and pulls remote playlists down.
  */
@@ -86,57 +254,26 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
 
     const userId = session.user.id;
 
-    // 1. Gather local data for this authenticated user
-    const localTracks = await getAllTracks(userId);
+    // 1. Gather local data for this authenticated user (exclude is_playlist_only tracks)
+    const localTracks = (await getAllTracks(userId)).filter(
+      (t) => Number(t.is_playlist_only ?? 0) !== 1
+    );
     const localPlaylists = await getAllPlaylists(userId);
     const localPlaylistTracks = await getAllPlaylistTracksRaw(userId);
 
-    // 2. Push local tracks to Supabase user_tracks (safe metadata only)
-    if (localTracks.length > 0) {
-      const remoteTracksPayload = localTracks.map((t) => ({
-        id: t.id,
-        user_id: userId,
-        youtube_id:
-          t.youtube_id ||
-          (t.source === 'youtube'
-            ? t.id.replace(/^online_youtube_/, '').replace(/^track_yt_/, '').replace(/^yt_/, '')
-            : null),
-        title: t.title || 'Unknown Title',
-        artist: t.artist || 'Unknown Artist',
-        duration: Math.round(t.duration || 0),
-        artwork_url:
-          t.local_artwork_uri &&
-          !t.local_artwork_uri.startsWith('file://') &&
-          !t.local_artwork_uri.startsWith('content://')
-            ? t.local_artwork_uri
-            : null,
-        sort_order: t.sort_order ?? 0,
-        is_playlist_only: t.is_playlist_only ?? 0,
-      }));
+    // Only push personal (non-imported) playlists to user_playlists
+    const ownedPlaylists = localPlaylists.filter((p) => Number(p.is_imported ?? 0) !== 1);
+    const ownedPlaylistIdSet = new Set(ownedPlaylists.map((p) => p.id));
+    const ownedPlaylistTracks = localPlaylistTracks.filter((pt) =>
+      ownedPlaylistIdSet.has(pt.playlist_id)
+    );
 
-      // Upsert in batches of 50 to prevent packet size overflow
-      for (let i = 0; i < remoteTracksPayload.length; i += 50) {
-        const batch = remoteTracksPayload.slice(i, i + 50);
-        const { error: trackErr } = await supabase
-          .from('user_tracks')
-          .upsert(batch, { onConflict: 'user_id, id' });
-        if (trackErr) {
-          console.warn('Error syncing tracks batch to cloud, trying fallback schema:', trackErr.message);
-          // Fallback if remote schema hasn't had youtube_id or is_playlist_only migrated yet
-          const strippedBatch = batch.map(({ youtube_id, is_playlist_only, ...rest }: any) => rest);
-          const { error: fallbackErr } = await supabase
-            .from('user_tracks')
-            .upsert(strippedBatch, { onConflict: 'user_id, id' });
-          if (fallbackErr) {
-            console.warn('Fallback sync failed:', fallbackErr.message);
-          }
-        }
-      }
-    }
+    // 2. Push local tracks to Supabase user_tracks (safe metadata only, excluding is_playlist_only = 1)
+    await pushTracksToCloud(userId, localTracks);
 
-    // 3. Push local playlists to Supabase user_playlists
-    if (localPlaylists.length > 0) {
-      const remotePlaylistsPayload = localPlaylists.map((p) => ({
+    // 3. Push local owned playlists to Supabase user_playlists
+    if (ownedPlaylists.length > 0) {
+      const remotePlaylistsPayload = ownedPlaylists.map((p) => ({
         id: p.id,
         user_id: userId,
         name: p.name,
@@ -160,9 +297,9 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
       }
     }
 
-    // 4. Push local playlist track relationships to Supabase user_playlist_tracks
-    if (localPlaylistTracks.length > 0) {
-      const remotePtPayload = localPlaylistTracks.map((pt) => ({
+    // 4. Push local playlist track relationships to Supabase user_playlist_tracks (owned playlists only)
+    if (ownedPlaylistTracks.length > 0) {
+      const remotePtPayload = ownedPlaylistTracks.map((pt) => ({
         playlist_id: pt.playlist_id,
         track_id: pt.track_id,
         user_id: userId,
@@ -223,50 +360,7 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
     }
 
     // 7. Pull remote tracks metadata into local SQLite
-    const { data: remoteTracks, error: pullTrkErr } = await supabase
-      .from('user_tracks')
-      .select('*')
-      .eq('user_id', userId);
-
-    if (!pullTrkErr && remoteTracks) {
-      const localTrackMap = new Map(localTracks.map((t) => [t.id, t]));
-      const newTracksToSave: Track[] = [];
-
-      for (const rTrk of remoteTracks) {
-        if (!localTrackMap.has(rTrk.id)) {
-          newTracksToSave.push({
-            id: rTrk.id,
-            user_id: userId,
-            youtube_id:
-              rTrk.youtube_id ||
-              (rTrk.id.startsWith('track_yt_')
-                ? rTrk.id.replace(/^track_yt_/, '')
-                : rTrk.id.startsWith('yt_')
-                ? rTrk.id.replace(/^yt_/, '')
-                : null),
-            title: rTrk.title,
-            artist: rTrk.artist || 'Unknown Artist',
-            local_audio_uri: '',
-            local_artwork_uri: rTrk.artwork_url || null,
-            duration: rTrk.duration || 0,
-            source: 'youtube',
-            is_synced: 1,
-            created_at: rTrk.created_at || new Date().toISOString(),
-            sort_order: rTrk.sort_order ?? 0,
-            is_playlist_only: rTrk.is_playlist_only ?? 0,
-          });
-        }
-      }
-
-      if (newTracksToSave.length > 0) {
-        await saveTracks(newTracksToSave, userId);
-        // If current active user in playerStore is this user, refresh playerStore tracks
-        if (getActiveUserId() === userId) {
-          const updatedTracks = await getAllTracks(userId);
-          usePlayerStore.getState().setTracks(updatedTracks);
-        }
-      }
-    }
+    await pullTracksFromCloud(userId);
 
     // 8. Trigger background sequential Auto-Download Sync if enabled
     runAutoDownloadSync(userId).catch((autoErr) => {
@@ -1295,55 +1389,15 @@ export async function deletePlaylistWithSync(playlist: Playlist): Promise<void> 
     }
   }
 
-  // If imported playlist, clean up orphaned is_playlist_only = 1 tracks and their cached local files
-  if (isImported) {
-    try {
-      const db = await getDatabase();
-      const tracksInPlaylist = await db.getAllAsync<{
-        id: string;
-        local_audio_uri: string;
-        local_artwork_uri: string | null;
-      }>(
-        `SELECT t.id, t.local_audio_uri, t.local_artwork_uri
-         FROM tracks t
-         JOIN playlist_tracks pt ON t.id = pt.track_id
-         WHERE pt.playlist_id = ? AND t.is_playlist_only = 1`,
-        [playlist.id]
-      );
-
-      for (const t of tracksInPlaylist) {
-        const otherUse = await db.getFirstAsync<{ count: number }>(
-          'SELECT COUNT(*) as count FROM playlist_tracks WHERE track_id = ? AND playlist_id != ?',
-          [t.id, playlist.id]
-        );
-        if (!otherUse || otherUse.count === 0) {
-          // Orphaned track: clean up cached local audio file if stored
-          if (
-            t.local_audio_uri &&
-            (t.local_audio_uri.startsWith('file://') || t.local_audio_uri.includes('jstream_tracks'))
-          ) {
-            try {
-              await FileSystem.deleteAsync(t.local_audio_uri, { idempotent: true });
-            } catch {
-              // ignore
-            }
-          }
-          if (t.local_artwork_uri && t.local_artwork_uri.startsWith('file://')) {
-            try {
-              await FileSystem.deleteAsync(t.local_artwork_uri, { idempotent: true });
-            } catch {
-              // ignore
-            }
-          }
-          await db.runAsync('DELETE FROM tracks WHERE id = ?', [t.id]);
-        }
-      }
-    } catch (cleanErr) {
-      console.warn('[DeletePlaylistWithSync] Orphaned track cleanup warning:', cleanErr);
-    }
-  }
-
+  // Delete playlist and clean up orphaned is_playlist_only = 1 tracks & audio files
   await deletePlaylist(playlist.id, playlist.user_id);
+
+  // Refresh playerStore if deleted playlist belonged to active user so All Songs stays clean
+  const activeUserId = getActiveUserId();
+  if (activeUserId === playlist.user_id || activeUserId === 'local_guest') {
+    const updatedTracks = await getAllTracks(activeUserId);
+    usePlayerStore.getState().setTracks(updatedTracks);
+  }
 }
 
 export interface LibraryBackupData {

@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Track, Playlist } from '@/types/music';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
@@ -398,6 +399,19 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
   // Safe startup cleanup for empty duplicate imported playlists
   await cleanupDuplicateImportedPlaylists();
 
+  // One-time automatic cleanup migration for leaked imported playlist tracks in All Songs
+  try {
+    const migrationFlagKey = 'migration_cleanup_imported_tracks_leak_v1';
+    const hasRun = await getSetting(migrationFlagKey);
+    if (!hasRun) {
+      await cleanupImportedTracks();
+      await setSetting(migrationFlagKey, 'true');
+      console.log('✓ Successfully executed one-time cleanup migration for imported playlist tracks');
+    }
+  } catch (cleanErr) {
+    console.warn('Imported playlist tracks cleanup migration error:', cleanErr);
+  }
+
   // Auto-migrate any leftover 'local_guest' rows if a logged-in user is active
   try {
     const activeUserId = getActiveUserId();
@@ -711,16 +725,234 @@ export async function getPlaylistById(playlistId: string, userId?: string): Prom
   return row ?? null;
 }
 
-export async function deletePlaylist(playlistId: string, userId?: string): Promise<void> {
+export async function deletePlaylist(
+  param1: string,
+  param2?: string
+): Promise<void> {
   const db = await getDatabase();
+  let playlistId = param1;
+  let userId = param2;
+
+  // Flexible argument handling: supports deletePlaylist(playlistId, userId) and deletePlaylist(userId, playlistId)
+  if (param2) {
+    const pl1 = await db.getFirstAsync<{ id: string; user_id: string }>(
+      'SELECT id, user_id FROM playlists WHERE id = ?',
+      [param1]
+    );
+    if (pl1) {
+      playlistId = param1;
+      userId = param2 || pl1.user_id;
+    } else {
+      const pl2 = await db.getFirstAsync<{ id: string; user_id: string }>(
+        'SELECT id, user_id FROM playlists WHERE id = ?',
+        [param2]
+      );
+      if (pl2) {
+        playlistId = param2;
+        userId = param1 || pl2.user_id;
+      } else if (param2.startsWith('pl_') || !param1.startsWith('pl_')) {
+        playlistId = param2;
+        userId = param1;
+      }
+    }
+  }
+
   const uId = userId || getActiveUserId();
+  const targetUserParam = userId || uId;
+
   await db.withTransactionAsync(async () => {
+    // 1. Delete playlist tracks association for this playlist
     await db.runAsync('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId]);
+
+    // 2. Delete playlist record
     await db.runAsync(
       'DELETE FROM playlists WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = "local_guest")',
-      [playlistId, uId, userId || uId]
+      [playlistId, uId, targetUserParam]
     );
+
+    // 3. Find any tracks where (user_id = ? OR user_id = 'local_guest') AND is_playlist_only = 1
+    // that are no longer referenced in playlist_tracks by any remaining playlist
+    const orphanedTracks = await db.getAllAsync<{
+      id: string;
+      local_audio_uri: string | null;
+      local_artwork_uri: string | null;
+    }>(
+      `SELECT id, local_audio_uri, local_artwork_uri
+       FROM tracks
+       WHERE (user_id = ? OR user_id = ? OR user_id = 'local_guest')
+         AND COALESCE(is_playlist_only, 0) = 1
+         AND id NOT IN (SELECT DISTINCT track_id FROM playlist_tracks)`,
+      [uId, targetUserParam]
+    );
+
+    // 4. Delete their cached local_audio_uri and local_artwork_uri files if present
+    for (const t of orphanedTracks) {
+      if (
+        t.local_audio_uri &&
+        (t.local_audio_uri.startsWith('file://') || t.local_audio_uri.includes('jstream_tracks'))
+      ) {
+        try {
+          const otherRef = await db.getFirstAsync<{ count: number }>(
+            'SELECT COUNT(*) as count FROM tracks WHERE local_audio_uri = ? AND id != ?',
+            [t.local_audio_uri, t.id]
+          );
+          if (!otherRef || otherRef.count === 0) {
+            await FileSystem.deleteAsync(t.local_audio_uri, { idempotent: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (t.local_artwork_uri && t.local_artwork_uri.startsWith('file://')) {
+        try {
+          const otherArtRef = await db.getFirstAsync<{ count: number }>(
+            'SELECT COUNT(*) as count FROM tracks WHERE local_artwork_uri = ? AND id != ?',
+            [t.local_artwork_uri, t.id]
+          );
+          if (!otherArtRef || otherArtRef.count === 0) {
+            await FileSystem.deleteAsync(t.local_artwork_uri, { idempotent: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 5. Delete orphaned tracks from tracks table
+    if (orphanedTracks.length > 0) {
+      const placeholders = orphanedTracks.map(() => '?').join(',');
+      await db.runAsync(
+        `DELETE FROM tracks WHERE id IN (${placeholders}) AND COALESCE(is_playlist_only, 0) = 1`,
+        orphanedTracks.map((t) => t.id)
+      );
+    }
   });
+}
+
+/**
+ * Clean up leaked imported playlist tracks in "Your Library -> All Songs":
+ * 1. Any track with is_playlist_only = 1 that is not in any remaining playlist_tracks row: delete it.
+ * 2. Any un-downloaded cloud-only track (local_audio_uri is null or empty) that belongs to an is_imported = 1
+ *    playlist and not in any personal non-imported playlist: mark is_playlist_only = 1.
+ * 3. Any un-downloaded cloud-only track leaked from a deleted imported playlist (source = 'youtube' with
+ *    un-downloaded audio and not in any personal non-imported playlist, and not in any remaining playlist): delete it.
+ */
+export async function cleanupImportedTracks(userId?: string): Promise<{
+  deletedOrphanCount: number;
+  updatedImportedCount: number;
+  deletedLeakedCount: number;
+}> {
+  const db = await getDatabase();
+  let deletedOrphanCount = 0;
+  let updatedImportedCount = 0;
+  let deletedLeakedCount = 0;
+
+  try {
+    // 1. Any track with is_playlist_only = 1 that is not in any remaining playlist_tracks row: delete it.
+    const orphanedTracks = await db.getAllAsync<{
+      id: string;
+      local_audio_uri: string | null;
+      local_artwork_uri: string | null;
+    }>(
+      `SELECT id, local_audio_uri, local_artwork_uri
+       FROM tracks
+       WHERE COALESCE(is_playlist_only, 0) = 1
+         AND id NOT IN (SELECT DISTINCT track_id FROM playlist_tracks)`
+    );
+
+    for (const ot of orphanedTracks) {
+      if (
+        ot.local_audio_uri &&
+        (ot.local_audio_uri.startsWith('file://') || ot.local_audio_uri.includes('jstream_tracks'))
+      ) {
+        try {
+          const otherRef = await db.getFirstAsync<{ count: number }>(
+            'SELECT COUNT(*) as count FROM tracks WHERE local_audio_uri = ? AND id != ?',
+            [ot.local_audio_uri, ot.id]
+          );
+          if (!otherRef || otherRef.count === 0) {
+            await FileSystem.deleteAsync(ot.local_audio_uri, { idempotent: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (ot.local_artwork_uri && ot.local_artwork_uri.startsWith('file://')) {
+        try {
+          const otherArtRef = await db.getFirstAsync<{ count: number }>(
+            'SELECT COUNT(*) as count FROM tracks WHERE local_artwork_uri = ? AND id != ?',
+            [ot.local_artwork_uri, ot.id]
+          );
+          if (!otherArtRef || otherArtRef.count === 0) {
+            await FileSystem.deleteAsync(ot.local_artwork_uri, { idempotent: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (orphanedTracks.length > 0) {
+      const placeholders = orphanedTracks.map(() => '?').join(',');
+      await db.runAsync(
+        `DELETE FROM tracks WHERE id IN (${placeholders}) AND COALESCE(is_playlist_only, 0) = 1`,
+        orphanedTracks.map((t) => t.id)
+      );
+      deletedOrphanCount = orphanedTracks.length;
+    }
+
+    // 2. Any un-downloaded cloud-only track that belongs to an is_imported = 1 playlist
+    // and not in any personal non-imported playlist: mark is_playlist_only = 1
+    const updateResult = await db.runAsync(
+      `UPDATE tracks
+       SET is_playlist_only = 1
+       WHERE (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')
+         AND id IN (
+           SELECT pt.track_id
+           FROM playlist_tracks pt
+           JOIN playlists p ON pt.playlist_id = p.id
+           WHERE p.is_imported = 1
+         )
+         AND id NOT IN (
+           SELECT pt.track_id
+           FROM playlist_tracks pt
+           JOIN playlists p ON pt.playlist_id = p.id
+           WHERE COALESCE(p.is_imported, 0) = 0
+         )`
+    );
+    updatedImportedCount = updateResult.changes ?? 0;
+
+    // 3. Any un-downloaded cloud-only track that was leaked from a deleted imported playlist
+    // (source = 'youtube' with un-downloaded audio and not in any personal non-imported playlist,
+    // and not in any remaining playlist): delete it
+    const leakedCloudTracks = await db.getAllAsync<{ id: string }>(
+      `SELECT id
+       FROM tracks
+       WHERE source = 'youtube'
+         AND (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')
+         AND id NOT IN (
+           SELECT pt.track_id
+           FROM playlist_tracks pt
+           JOIN playlists p ON pt.playlist_id = p.id
+           WHERE COALESCE(p.is_imported, 0) = 0
+         )
+         AND id NOT IN (SELECT DISTINCT track_id FROM playlist_tracks)`
+    );
+
+    if (leakedCloudTracks.length > 0) {
+      const placeholders = leakedCloudTracks.map(() => '?').join(',');
+      await db.runAsync(
+        `DELETE FROM tracks WHERE id IN (${placeholders})`,
+        leakedCloudTracks.map((t) => t.id)
+      );
+      deletedLeakedCount = leakedCloudTracks.length;
+    }
+  } catch (err) {
+    console.warn('[database] cleanupImportedTracks error:', err);
+  }
+
+  return { deletedOrphanCount, updatedImportedCount, deletedLeakedCount };
 }
 
 export async function addTrackToPlaylist(
