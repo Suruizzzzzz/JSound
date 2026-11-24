@@ -1,4 +1,4 @@
-import { StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { ThemeColors } from '@/constants/theme';
 
 export const createStyles = (theme: ThemeColors) =>
@@ -710,49 +710,20 @@ export const createStyles = (theme: ThemeColors) =>
       color: theme.textSecondary,
     },
     playlistHeroButtonRow: {
-      flexDirection: 'column',
-      gap: 10,
-      width: '100%',
-    },
-    playlistHeroSecondaryRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 10,
       width: '100%',
-    },
-    playlistFilterContainer: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: theme.surfaceElevated,
-      borderRadius: 10,
-      borderWidth: 1,
-      borderColor: theme.border,
-      paddingHorizontal: 10,
-      paddingVertical: Platform.OS === 'ios' ? 7 : 4,
-      marginTop: 10,
-      width: '100%',
-    },
-    playlistFilterIcon: {
-      marginRight: 6,
-    },
-    playlistFilterInput: {
-      flex: 1,
-      fontSize: 13,
-      color: theme.textPrimary,
-      paddingVertical: 0,
-    },
-    playlistFilterClearBtn: {
-      padding: 4,
     },
     playlistHeroPlayAllBtn: {
-      width: '100%',
+      flex: 1,
+      height: 44,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
       backgroundColor: theme.primary,
-      paddingVertical: 13,
-      borderRadius: 24,
+      borderRadius: 22,
     },
     playlistHeroPlayAllText: {
       fontSize: 14,
@@ -761,6 +732,7 @@ export const createStyles = (theme: ThemeColors) =>
     },
     playlistHeroShareBtn: {
       flex: 1,
+      height: 44,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
@@ -768,8 +740,7 @@ export const createStyles = (theme: ThemeColors) =>
       backgroundColor: theme.surfaceElevated,
       borderWidth: 1,
       borderColor: theme.border,
-      paddingVertical: 12,
-      borderRadius: 24,
+      borderRadius: 22,
     },
     playlistHeroShareText: {
       fontSize: 14,

@@ -58,8 +58,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint",
-    "postinstall": "node ./scripts/patch-expo-audio.js"
+    "lint": "expo lint"
   },
   "private": true
 }

@@ -1529,23 +1529,13 @@ export default function LibraryScreen() {
                 {selectedPlaylist.name}
               </Text>
 
-              {/* Subtitle & Status Badges */}
+              {/* Subtitle & Status Badge */}
               <View style={styles.playlistHeroSubtitleRow}>
                 <Text style={styles.playlistHeroSubtitle}>
                   {selectedPlaylistTracks.length} song{selectedPlaylistTracks.length === 1 ? '' : 's'}
                   {totalPlaylistDurationReadable ? ` • ${totalPlaylistDurationReadable}` : ''}
                 </Text>
                 <Text style={[styles.playlistHeroSubtitle, { opacity: 0.5 }]}>•</Text>
-                <View style={styles.playlistStatusBadge}>
-                  <Ionicons
-                    name={selectedPlaylist.is_synced ? 'cloud-done-outline' : 'phone-portrait-outline'}
-                    size={12}
-                    color={theme.textSecondary}
-                  />
-                  <Text style={styles.playlistStatusBadgeText}>
-                    {selectedPlaylist.is_synced ? 'Synced' : 'Offline'}
-                  </Text>
-                </View>
                 {isImported ? (
                   <View style={styles.playlistStatusBadge}>
                     <Ionicons name="download-outline" size={12} color={theme.textSecondary} />
@@ -1567,15 +1557,9 @@ export default function LibraryScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
-                {selectedPlaylist.share_code && (
-                  <View style={styles.playlistStatusBadge}>
-                    <Ionicons name="link-outline" size={12} color={theme.textSecondary} />
-                    <Text style={styles.playlistStatusBadgeText}>{selectedPlaylist.share_code}</Text>
-                  </View>
-                )}
               </View>
 
-              {/* Button Layout: Row 1 = Full-width Play All, Row 2 = Add Songs + Share side-by-side */}
+              {/* Button Layout: Single row = Play All + Share side-by-side */}
               <View style={styles.playlistHeroButtonRow}>
                 <TouchableOpacity
                   style={styles.playlistHeroPlayAllBtn}
@@ -1587,67 +1571,21 @@ export default function LibraryScreen() {
                   <Text style={styles.playlistHeroPlayAllText}>Play All</Text>
                 </TouchableOpacity>
 
-                <View style={styles.playlistHeroSecondaryRow}>
-                  {!isImported && (
-                    <TouchableOpacity
-                      style={styles.playlistHeroShareBtn}
-                      onPress={handleOpenAddSongsModal}
-                      activeOpacity={0.7}
-                      accessibilityLabel="Add songs to playlist"
-                    >
-                      <Ionicons name="add-circle-outline" size={17} color={theme.textPrimary} />
-                      <Text style={styles.playlistHeroShareText}>Add Songs</Text>
-                    </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.playlistHeroShareBtn}
+                  onPress={handleSharePlaylist}
+                  activeOpacity={0.7}
+                  disabled={isSharingPlaylist}
+                  accessibilityLabel="Share playlist"
+                >
+                  {isSharingPlaylist ? (
+                    <ActivityIndicator size="small" color={theme.textPrimary} />
+                  ) : (
+                    <Ionicons name="share-social-outline" size={17} color={theme.textPrimary} />
                   )}
-
-                  <TouchableOpacity
-                    style={styles.playlistHeroShareBtn}
-                    onPress={handleSharePlaylist}
-                    activeOpacity={0.7}
-                    disabled={isSharingPlaylist}
-                    accessibilityLabel="Share playlist"
-                  >
-                    {isSharingPlaylist ? (
-                      <ActivityIndicator size="small" color={theme.textPrimary} />
-                    ) : (
-                      <Ionicons name="share-social-outline" size={17} color={theme.textPrimary} />
-                    )}
-                    <Text style={styles.playlistHeroShareText}>Share</Text>
-                  </TouchableOpacity>
-                </View>
+                  <Text style={styles.playlistHeroShareText}>Share</Text>
+                </TouchableOpacity>
               </View>
-
-              {/* Filter tracks search bar (shown if > 8 tracks or query is active) */}
-              {(selectedPlaylistTracks.length > 8 || playlistFilterQuery.length > 0) && (
-                <View style={styles.playlistFilterContainer}>
-                  <Ionicons
-                    name="search-outline"
-                    size={16}
-                    color={theme.textSecondary}
-                    style={styles.playlistFilterIcon}
-                  />
-                  <TextInput
-                    style={styles.playlistFilterInput}
-                    placeholder="Filter tracks..."
-                    placeholderTextColor={theme.textMuted}
-                    value={playlistFilterQuery}
-                    onChangeText={setPlaylistFilterQuery}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    clearButtonMode="while-editing"
-                  />
-                  {playlistFilterQuery.length > 0 && (
-                    <TouchableOpacity
-                      onPress={() => setPlaylistFilterQuery('')}
-                      style={styles.playlistFilterClearBtn}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      accessibilityLabel="Clear filter"
-                    >
-                      <Ionicons name="close-circle" size={16} color={theme.textSecondary} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              )}
             </View>
           </View>
 
@@ -2734,6 +2672,19 @@ export default function LibraryScreen() {
             ) : (
               /* Owner Menu: Full Mutations Permitted */
               <>
+                {/* Add Songs to Playlist */}
+                <TouchableOpacity
+                  style={styles.menuSheetOption}
+                  onPress={() => {
+                    setShowPlaylistMenuModal(false);
+                    handleOpenAddSongsModal();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="add-circle-outline" size={20} color={theme.textPrimary} />
+                  <Text style={styles.menuSheetOptionText}>Add Songs</Text>
+                </TouchableOpacity>
+
                 {/* Edit Playlist Title */}
                 <TouchableOpacity
                   style={styles.menuSheetOption}

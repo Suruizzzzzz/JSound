@@ -322,6 +322,31 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     // Ignore if tables not yet populated
   }
 
+  // Safe cleanup: ensure tracks that exist ONLY inside imported playlists (is_imported = 1)
+  // and not in any personal/non-imported playlist have is_playlist_only = 1 so they do not leak into All Songs.
+  try {
+    await db.execAsync(`
+      UPDATE tracks
+      SET is_playlist_only = 1
+      WHERE id IN (
+        SELECT pt.track_id
+        FROM playlist_tracks pt
+        JOIN playlists p ON pt.playlist_id = p.id
+        WHERE p.is_imported = 1
+          AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
+      )
+      AND id NOT IN (
+        SELECT pt.track_id
+        FROM playlist_tracks pt
+        JOIN playlists p ON pt.playlist_id = p.id
+        WHERE COALESCE(p.is_imported, 0) = 0
+          AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
+      );
+    `);
+  } catch (cleanErr) {
+    console.warn('Imported playlist tracks cleanup warning:', cleanErr);
+  }
+
   try {
     await db.execAsync('ALTER TABLE playlists ADD COLUMN cover_uri TEXT;');
   } catch {

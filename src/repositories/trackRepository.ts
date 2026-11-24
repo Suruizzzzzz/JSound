@@ -37,7 +37,11 @@ export async function saveTrack(track: Track, userId?: string): Promise<void> {
       duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE tracks.duration END,
       source = excluded.source,
       is_synced = excluded.is_synced,
-      is_playlist_only = CASE WHEN excluded.local_audio_uri != '' OR excluded.is_playlist_only = 0 THEN 0 ELSE tracks.is_playlist_only END`,
+      is_playlist_only = CASE
+        WHEN tracks.is_playlist_only = 0 THEN 0
+        WHEN excluded.is_playlist_only = 0 THEN 0
+        ELSE 1
+      END`,
     [
       track.id,
       uId,
@@ -78,7 +82,11 @@ export async function saveTracks(tracks: Track[], userId?: string): Promise<void
           duration = CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE tracks.duration END,
           source = excluded.source,
           is_synced = excluded.is_synced,
-          is_playlist_only = CASE WHEN excluded.local_audio_uri != '' OR excluded.is_playlist_only = 0 THEN 0 ELSE tracks.is_playlist_only END`,
+          is_playlist_only = CASE
+            WHEN tracks.is_playlist_only = 0 THEN 0
+            WHEN excluded.is_playlist_only = 0 THEN 0
+            ELSE 1
+          END`,
         [
           track.id,
           uId,

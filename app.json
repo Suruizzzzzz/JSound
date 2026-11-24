@@ -61,16 +61,15 @@
           ]
         }
       ],
+      "expo-asset",
+      "expo-secure-store",
+      "expo-web-browser",
       [
         "expo-audio",
         {
           "enableBackgroundPlayback": true
         }
-      ],
-      "./plugins/withExpoAudioLockScreen",
-      "expo-asset",
-      "expo-secure-store",
-      "expo-web-browser"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
