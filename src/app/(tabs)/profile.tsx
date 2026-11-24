@@ -11,17 +11,24 @@ import {
   KeyboardAvoidingView,
   Platform,
   Switch,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Clipboard from 'expo-clipboard';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/services/authService';
-import { getSetting, setSetting, getAllPlaylists } from '@/lib/database';
-import { runAutoDownloadSync } from '@/services/playlistSyncService';
+import { getSetting, setSetting, getAllPlaylists, getDatabase } from '@/lib/database';
+import {
+  runAutoDownloadSync,
+  exportLibraryBackupJson,
+  importLibraryBackupJson,
+} from '@/services/playlistSyncService';
 import { useSyncProgressStore } from '@/store/syncProgressStore';
 import { createStyles } from '@/styles/profile.styles';
 
@@ -46,11 +53,14 @@ export default function ProfileScreen() {
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
   const setProfileName = useAuthStore((state) => state.setProfileName);
   const setProfileAvatar = useAuthStore((state) => state.setProfileAvatar);
+  const importGuestLibraryToAccount = useAuthStore((state) => state.importGuestLibraryToAccount);
 
   const tracks = usePlayerStore((state) => state.tracks);
 
   const [playlistCount, setPlaylistCount] = useState<number>(0);
   const [storageUsageMb, setStorageUsageMb] = useState<string | null>(null);
+  const [guestTracksCount, setGuestTracksCount] = useState<number>(0);
+  const [isClaimingGuest, setIsClaimingGuest] = useState<boolean>(false);
 
   const [showNameModal, setShowNameModal] = useState(false);
   const [editingName, setEditingName] = useState('');
@@ -237,6 +247,91 @@ export default function ProfileScreen() {
     }
   };
 
+  // Check if unauthenticated guest tracks exist in SQLite
+  useEffect(() => {
+    let isMounted = true;
+    async function checkGuestTracks() {
+      if (!user.is_logged_in) {
+        setGuestTracksCount(0);
+        return;
+      }
+      try {
+        const db = await getDatabase();
+        const row = await db.getFirstAsync<{ count: number }>(
+          "SELECT COUNT(*) as count FROM tracks WHERE user_id = 'local_guest'"
+        );
+        if (isMounted) {
+          setGuestTracksCount(row?.count ?? 0);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    checkGuestTracks();
+    return () => {
+      isMounted = false;
+    };
+  }, [user.is_logged_in]);
+
+  const handleClaimGuestTracks = async () => {
+    setIsClaimingGuest(true);
+    try {
+      const res = await importGuestLibraryToAccount();
+      Alert.alert(
+        'Music Claimed',
+        `Successfully transferred ${res.tracksCount} tracks and ${res.playlistsCount} playlists to your account.`
+      );
+      setGuestTracksCount(0);
+    } catch (err: any) {
+      Alert.alert('Claim Error', err?.message || 'Could not transfer guest tracks.');
+    } finally {
+      setIsClaimingGuest(false);
+    }
+  };
+
+  const handleExportBackup = async () => {
+    try {
+      const json = await exportLibraryBackupJson();
+      const docDir = FileSystem.documentDirectory;
+      if (docDir) {
+        const targetPath = `${docDir}jstream_library_backup.json`;
+        await FileSystem.writeAsStringAsync(targetPath, json);
+      }
+      await Clipboard.setStringAsync(json);
+      Alert.alert(
+        'Backup Exported',
+        'Your library metadata has been exported and copied to your clipboard. A backup file (jstream_library_backup.json) was also saved to app storage.'
+      );
+    } catch (err: any) {
+      Alert.alert('Export Failed', err?.message || 'Failed to export library.');
+    }
+  };
+
+  const handleImportBackup = async () => {
+    try {
+      const pickRes = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true,
+      });
+      if (pickRes.canceled || !pickRes.assets?.[0]?.uri) {
+        return;
+      }
+      const fileUri = pickRes.assets[0].uri;
+      const fileContent = await FileSystem.readAsStringAsync(fileUri);
+      const importRes = await importLibraryBackupJson(fileContent);
+      if (importRes.success) {
+        Alert.alert(
+          'Backup Restored',
+          `Successfully restored ${importRes.tracksCount} tracks and ${importRes.playlistsCount} playlists.`
+        );
+      } else {
+        Alert.alert('Import Error', importRes.error || 'Failed to restore backup.');
+      }
+    } catch (err: any) {
+      Alert.alert('Import Failed', err?.message || 'Could not read backup file.');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Subtle JS Monogram Background Watermark */}
@@ -401,6 +496,46 @@ export default function ProfileScreen() {
           </View>
         ) : (
           <>
+            {guestTracksCount > 0 && (
+              <View
+                style={[
+                  styles.accountCard,
+                  { marginBottom: 14, borderColor: theme.primary, borderWidth: 1 },
+                ]}
+              >
+                <View style={styles.accountRow}>
+                  <View style={styles.accountLeft}>
+                    <View
+                      style={[
+                        styles.accountIconWrap,
+                        { backgroundColor: theme.primary + '25' },
+                      ]}
+                    >
+                      <Ionicons name="gift-outline" size={18} color={theme.primary} />
+                    </View>
+                    <View style={styles.accountTextGroup}>
+                      <Text style={styles.accountTitle}>Claim On-Device Songs</Text>
+                      <Text style={styles.accountSubtitle}>
+                        {guestTracksCount} song{guestTracksCount > 1 ? 's' : ''} saved before signing in
+                      </Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.syncNowButton}
+                    onPress={handleClaimGuestTracks}
+                    disabled={isClaimingGuest}
+                    activeOpacity={0.8}
+                  >
+                    {isClaimingGuest ? (
+                      <ActivityIndicator size="small" color={theme.onPrimary} />
+                    ) : (
+                      <Text style={styles.syncNowButtonText}>Claim</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
             <View style={styles.accountCard}>
               <View style={styles.accountRow}>
                 <View style={styles.accountLeft}>
@@ -506,6 +641,52 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           </>
         )}
+
+        {/* Data & Backup Section */}
+        <Text style={styles.sectionTitle}>Data &amp; Backup</Text>
+        <View style={[styles.accountCard, { marginBottom: 20 }]}>
+          {/* Export Backup Row */}
+          <TouchableOpacity
+            style={styles.autoDownloadRow}
+            onPress={handleExportBackup}
+            activeOpacity={0.7}
+          >
+            <View style={styles.accountLeft}>
+              <View style={styles.accountIconWrap}>
+                <Ionicons name="download-outline" size={18} color={theme.textPrimary} />
+              </View>
+              <View style={styles.accountTextGroup}>
+                <Text style={styles.accountTitle}>Export Library Backup</Text>
+                <Text style={styles.accountSubtitle}>
+                  Save playlists &amp; metadata to JSON
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+          </TouchableOpacity>
+
+          <View style={styles.accountDivider} />
+
+          {/* Import Backup Row */}
+          <TouchableOpacity
+            style={styles.autoDownloadRow}
+            onPress={handleImportBackup}
+            activeOpacity={0.7}
+          >
+            <View style={styles.accountLeft}>
+              <View style={styles.accountIconWrap}>
+                <Ionicons name="push-outline" size={18} color={theme.textPrimary} />
+              </View>
+              <View style={styles.accountTextGroup}>
+                <Text style={styles.accountTitle}>Restore from Backup</Text>
+                <Text style={styles.accountSubtitle}>
+                  Import songs &amp; playlists from a .json file
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+          </TouchableOpacity>
+        </View>
       </ScrollView>
 
       {/* Edit Display Name Modal */}

@@ -2,6 +2,22 @@ import * as SQLite from 'expo-sqlite';
 import { Track, Playlist } from '@/types/music';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
+let activeUserIdGetter: (() => string) | null = null;
+
+export function registerActiveUserIdGetter(getter: () => string) {
+  activeUserIdGetter = getter;
+}
+
+export function getActiveUserId(): string {
+  if (activeUserIdGetter) {
+    try {
+      return activeUserIdGetter() || 'local_guest';
+    } catch {
+      return 'local_guest';
+    }
+  }
+  return 'local_guest';
+}
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
@@ -18,7 +34,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS tracks (
-      id TEXT PRIMARY KEY NOT NULL,
+      id TEXT NOT NULL,
       user_id TEXT NOT NULL DEFAULT 'local_guest',
       youtube_id TEXT,
       title TEXT NOT NULL,
@@ -30,15 +46,17 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       is_synced INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      is_playlist_only INTEGER NOT NULL DEFAULT 0
+      is_playlist_only INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks (user_id);
+    CREATE INDEX IF NOT EXISTS idx_tracks_id ON tracks (id);
     CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks (title);
     CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks (artist);
 
     CREATE TABLE IF NOT EXISTS playlists (
-      id TEXT PRIMARY KEY NOT NULL,
+      id TEXT NOT NULL,
       user_id TEXT NOT NULL DEFAULT 'local_guest',
       name TEXT NOT NULL,
       cover_uri TEXT,
@@ -48,10 +66,12 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       is_synced INTEGER NOT NULL DEFAULT 0,
       is_public INTEGER NOT NULL DEFAULT 0,
       is_imported INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists (user_id);
+    CREATE INDEX IF NOT EXISTS idx_playlists_id ON playlists (id);
 
     CREATE TABLE IF NOT EXISTS playlist_tracks (
       id TEXT PRIMARY KEY NOT NULL,
@@ -61,8 +81,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       added_at TEXT,
-      FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE,
-      FOREIGN KEY (track_id) REFERENCES tracks (id) ON DELETE CASCADE
+      FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks (playlist_id);
@@ -84,6 +103,89 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     await db.execAsync('ALTER TABLE tracks ADD COLUMN is_playlist_only INTEGER NOT NULL DEFAULT 0;');
   } catch {
     // Column already exists, safe to ignore
+  }
+
+  // Check and migrate tracks table to composite PRIMARY KEY (user_id, id) if currently standalone id PK
+  try {
+    const tracksInfo = await db.getAllAsync<{ name: string; pk: number }>('PRAGMA table_info(tracks);');
+    const isTracksCompositePk = tracksInfo.filter((c) => c.pk > 0).length >= 2;
+    if (!isTracksCompositePk && tracksInfo.length > 0) {
+      await db.execAsync(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE tracks_new (
+          id TEXT NOT NULL,
+          user_id TEXT NOT NULL DEFAULT 'local_guest',
+          youtube_id TEXT,
+          title TEXT NOT NULL,
+          artist TEXT NOT NULL,
+          local_audio_uri TEXT NOT NULL,
+          local_artwork_uri TEXT,
+          duration REAL NOT NULL DEFAULT 0,
+          source TEXT NOT NULL CHECK(source IN ('local', 'youtube')),
+          is_synced INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          is_playlist_only INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (user_id, id)
+        );
+        INSERT OR IGNORE INTO tracks_new (
+          id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri,
+          duration, source, is_synced, created_at, sort_order, is_playlist_only
+        )
+        SELECT id, COALESCE(user_id, 'local_guest'), youtube_id, title, artist, local_audio_uri, local_artwork_uri,
+          duration, source, is_synced, created_at, COALESCE(sort_order, 0), COALESCE(is_playlist_only, 0)
+        FROM tracks;
+        DROP TABLE tracks;
+        ALTER TABLE tracks_new RENAME TO tracks;
+        CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks (user_id);
+        CREATE INDEX IF NOT EXISTS idx_tracks_id ON tracks (id);
+        CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks (title);
+        CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks (artist);
+        PRAGMA foreign_keys = ON;
+      `);
+      console.log('✓ Migrated tracks to composite PRIMARY KEY (user_id, id)');
+    }
+  } catch (migErr) {
+    console.warn('Tracks composite PK migration warning:', migErr);
+  }
+
+  // Check and migrate playlists table to composite PRIMARY KEY (user_id, id) if currently standalone id PK
+  try {
+    const playlistsInfo = await db.getAllAsync<{ name: string; pk: number }>('PRAGMA table_info(playlists);');
+    const isPlaylistsCompositePk = playlistsInfo.filter((c) => c.pk > 0).length >= 2;
+    if (!isPlaylistsCompositePk && playlistsInfo.length > 0) {
+      await db.execAsync(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE playlists_new (
+          id TEXT NOT NULL,
+          user_id TEXT NOT NULL DEFAULT 'local_guest',
+          name TEXT NOT NULL,
+          cover_uri TEXT,
+          share_code TEXT,
+          sync_status TEXT DEFAULT 'synced',
+          sync_version INTEGER NOT NULL DEFAULT 1,
+          is_synced INTEGER NOT NULL DEFAULT 0,
+          is_public INTEGER NOT NULL DEFAULT 0,
+          is_imported INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (user_id, id)
+        );
+        INSERT OR IGNORE INTO playlists_new (
+          id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, is_imported, created_at
+        )
+        SELECT id, COALESCE(user_id, 'local_guest'), name, cover_uri, share_code, COALESCE(sync_status, 'synced'),
+          COALESCE(sync_version, 1), COALESCE(is_synced, 0), COALESCE(is_public, 0), COALESCE(is_imported, 0), created_at
+        FROM playlists;
+        DROP TABLE playlists;
+        ALTER TABLE playlists_new RENAME TO playlists;
+        CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists (user_id);
+        CREATE INDEX IF NOT EXISTS idx_playlists_id ON playlists (id);
+        PRAGMA foreign_keys = ON;
+      `);
+      console.log('✓ Migrated playlists to composite PRIMARY KEY (user_id, id)');
+    }
+  } catch (migErr) {
+    console.warn('Playlists composite PK migration warning:', migErr);
   }
 
   // Backfill: Remove existing un-downloaded cloud tracks from "Your Library -> All Songs"
@@ -371,11 +473,12 @@ export async function createPlaylist(
   coverUri?: string | null,
   shareCode?: string | null,
   customId?: string,
-  userId: string = 'local_guest',
+  userId?: string,
   isPublic: boolean | number = 0,
   isImported: boolean | number = 0
 ): Promise<Playlist> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const id = customId || `pl_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
   const now = new Date().toISOString();
   const cleanName = name.trim() || 'Untitled Playlist';
@@ -383,7 +486,7 @@ export async function createPlaylist(
   const importedFlag = isImported ? 1 : 0;
   const playlist: Playlist = {
     id,
-    user_id: userId,
+    user_id: uId,
     name: cleanName,
     cover_uri: coverUri || null,
     share_code: shareCode || null,
@@ -396,10 +499,16 @@ export async function createPlaylist(
     track_count: 0,
   };
 
-  // Safe UPSERT (INSERT OR IGNORE + UPDATE) to prevent triggering ON DELETE CASCADE
+  // Safe UPSERT with composite key (user_id, id)
   await db.runAsync(
-    `INSERT OR IGNORE INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, is_imported, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO playlists (id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, is_imported, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, id) DO UPDATE SET
+       name = excluded.name,
+       cover_uri = COALESCE(excluded.cover_uri, playlists.cover_uri),
+       share_code = COALESCE(excluded.share_code, playlists.share_code),
+       is_public = excluded.is_public,
+       is_imported = excluded.is_imported`,
     [
       playlist.id,
       playlist.user_id,
@@ -415,57 +524,44 @@ export async function createPlaylist(
     ]
   );
 
-  await db.runAsync(
-    `UPDATE playlists SET 
-       name = ?, 
-       cover_uri = COALESCE(?, cover_uri), 
-       share_code = COALESCE(?, share_code), 
-       is_public = ?,
-       is_imported = ?
-     WHERE id = ?`,
-    [
-      playlist.name,
-      playlist.cover_uri ?? null,
-      playlist.share_code ?? null,
-      playlist.is_public ?? 0,
-      playlist.is_imported ?? 0,
-      playlist.id,
-    ]
-  );
-
   return playlist;
 }
 
-export async function getAllPlaylists(): Promise<Playlist[]> {
+export async function getAllPlaylists(userId?: string): Promise<Playlist[]> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const rows = await db.getAllAsync<Playlist & { track_count: number }>(
     `SELECT p.*, COUNT(pt.track_id) AS track_count
      FROM playlists p
      LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+     WHERE p.user_id = ?
      GROUP BY p.id
-     ORDER BY p.created_at DESC`
+     ORDER BY p.created_at DESC`,
+    [uId]
   );
   return rows;
 }
 
-export async function getPlaylistById(playlistId: string): Promise<Playlist | null> {
+export async function getPlaylistById(playlistId: string, userId?: string): Promise<Playlist | null> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const row = await db.getFirstAsync<Playlist & { track_count: number }>(
     `SELECT p.*, COUNT(pt.track_id) AS track_count
      FROM playlists p
      LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
-     WHERE p.id = ?
+     WHERE p.id = ? AND p.user_id = ?
      GROUP BY p.id`,
-    [playlistId]
+    [playlistId, uId]
   );
   return row ?? null;
 }
 
-export async function deletePlaylist(playlistId: string): Promise<void> {
+export async function deletePlaylist(playlistId: string, userId?: string): Promise<void> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   await db.withTransactionAsync(async () => {
     await db.runAsync('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId]);
-    await db.runAsync('DELETE FROM playlists WHERE id = ?', [playlistId]);
+    await db.runAsync('DELETE FROM playlists WHERE id = ? AND user_id = ?', [playlistId, uId]);
   });
 }
 
@@ -601,15 +697,17 @@ export async function reorderPlaylistTracks(
   });
 }
 
-export async function getPlaylistTracks(playlistId: string): Promise<Track[]> {
+export async function getPlaylistTracks(playlistId: string, userId?: string): Promise<Track[]> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const rows = await db.getAllAsync<Track>(
     `SELECT t.*
      FROM tracks t
      JOIN playlist_tracks pt ON t.id = pt.track_id
-     WHERE pt.playlist_id = ?
+     JOIN playlists p ON pt.playlist_id = p.id AND t.user_id = p.user_id
+     WHERE pt.playlist_id = ? AND p.user_id = ?
      ORDER BY COALESCE(pt.sort_order, pt.position, 0) ASC, pt.created_at ASC`,
-    [playlistId]
+    [playlistId, uId]
   );
   return rows;
 }
@@ -626,27 +724,34 @@ export async function isTrackInPlaylist(
   return (row?.count ?? 0) > 0;
 }
 
-export async function getPlaylistsContainingTrack(trackId: string): Promise<string[]> {
+export async function getPlaylistsContainingTrack(trackId: string, userId?: string): Promise<string[]> {
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const rows = await db.getAllAsync<{ playlist_id: string }>(
-    'SELECT playlist_id FROM playlist_tracks WHERE track_id = ?',
-    [trackId]
+    `SELECT DISTINCT pt.playlist_id
+     FROM playlist_tracks pt
+     JOIN playlists p ON pt.playlist_id = p.id
+     WHERE pt.track_id = ? AND p.user_id = ?`,
+    [trackId, uId]
   );
   return rows.map((r) => r.playlist_id);
 }
 
 export async function getPlaylistsMembershipForTracks(
-  trackIds: string[]
+  trackIds: string[],
+  userId?: string
 ): Promise<Record<string, number>> {
   if (trackIds.length === 0) return {};
   const db = await getDatabase();
+  const uId = userId || getActiveUserId();
   const placeholders = trackIds.map(() => '?').join(',');
   const rows = await db.getAllAsync<{ playlist_id: string; count: number }>(
-    `SELECT playlist_id, COUNT(track_id) as count
-     FROM playlist_tracks
-     WHERE track_id IN (${placeholders})
-     GROUP BY playlist_id`,
-    trackIds
+    `SELECT pt.playlist_id, COUNT(pt.track_id) as count
+     FROM playlist_tracks pt
+     JOIN playlists p ON pt.playlist_id = p.id
+     WHERE p.user_id = ? AND pt.track_id IN (${placeholders})
+     GROUP BY pt.playlist_id`,
+    [uId, ...trackIds]
   );
   const result: Record<string, number> = {};
   for (const r of rows) {
@@ -677,7 +782,7 @@ export async function upsertPlaylistTrack(
   );
 }
 
-export async function getAllPlaylistTracksRaw(): Promise<
+export async function getAllPlaylistTracksRaw(userId?: string): Promise<
   {
     id: string;
     playlist_id: string;
@@ -689,5 +794,119 @@ export async function getAllPlaylistTracksRaw(): Promise<
   }[]
 > {
   const db = await getDatabase();
+  if (userId) {
+    return await db.getAllAsync(
+      `SELECT pt.*
+       FROM playlist_tracks pt
+       JOIN playlists p ON pt.playlist_id = p.id
+       WHERE p.user_id = ?`,
+      [userId]
+    );
+  }
   return await db.getAllAsync('SELECT * FROM playlist_tracks');
+}
+
+/**
+ * Claim/Import all on-device 'local_guest' tracks and playlists into a registered user account.
+ * Re-attributes database rows while pointing to the exact same audio files on disk.
+ */
+export async function claimGuestLibrary(targetUserId: string): Promise<{ tracksCount: number; playlistsCount: number }> {
+  if (!targetUserId || targetUserId === 'local_guest') {
+    return { tracksCount: 0, playlistsCount: 0 };
+  }
+
+  const db = await getDatabase();
+  let tracksCount = 0;
+  let playlistsCount = 0;
+
+  // Fast check: return immediately if no guest data exists
+  const guestTracks = await db.getAllAsync<Track>(
+    "SELECT * FROM tracks WHERE user_id = 'local_guest'"
+  );
+  const guestPlaylists = await db.getAllAsync<Playlist>(
+    "SELECT * FROM playlists WHERE user_id = 'local_guest'"
+  );
+
+  if (guestTracks.length === 0 && guestPlaylists.length === 0) {
+    return { tracksCount: 0, playlistsCount: 0 };
+  }
+
+  await db.withTransactionAsync(async () => {
+    // 1. Reassign guest tracks to target user (INSERT OR IGNORE to not overwrite existing account tracks)
+    for (const t of guestTracks) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO tracks (
+          id, user_id, youtube_id, title, artist, local_audio_uri, local_artwork_uri,
+          duration, source, is_synced, created_at, sort_order, is_playlist_only
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        [
+          t.id,
+          targetUserId,
+          t.youtube_id || null,
+          t.title,
+          t.artist,
+          t.local_audio_uri || '',
+          t.local_artwork_uri || null,
+          t.duration || 0,
+          t.source || 'youtube',
+          t.created_at || new Date().toISOString(),
+          t.sort_order ?? 0,
+          t.is_playlist_only ?? 0,
+        ]
+      );
+
+      // If the target user already had this track without local audio, attach the guest's local file
+      if (t.local_audio_uri) {
+        await db.runAsync(
+          `UPDATE tracks
+           SET local_audio_uri = ?
+           WHERE user_id = ? AND id = ? AND (local_audio_uri IS NULL OR local_audio_uri = '')`,
+          [t.local_audio_uri, targetUserId, t.id]
+        );
+      }
+
+      tracksCount++;
+    }
+
+    // 2. Reassign guest playlists to target user (INSERT OR IGNORE to not overwrite existing playlists)
+    for (const pl of guestPlaylists) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO playlists (
+          id, user_id, name, cover_uri, share_code, sync_status, sync_version, is_synced, is_public, is_imported, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'synced', 1, 0, ?, ?, ?)`,
+        [
+          pl.id,
+          targetUserId,
+          pl.name,
+          pl.cover_uri || null,
+          pl.share_code || null,
+          pl.is_public ?? 0,
+          pl.is_imported ?? 0,
+          pl.created_at || new Date().toISOString(),
+        ]
+      );
+      playlistsCount++;
+    }
+
+    // 3. Re-attribute guest playlist tracks
+    const guestPtRows = await db.getAllAsync<{ id: string; playlist_id: string; track_id: string; position: number; sort_order: number; created_at: string; added_at?: string }>(
+      `SELECT pt.* FROM playlist_tracks pt
+       JOIN playlists p ON pt.playlist_id = p.id
+       WHERE p.user_id = 'local_guest'`
+    );
+
+    for (const pt of guestPtRows) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO playlist_tracks (id, playlist_id, track_id, position, sort_order, created_at, added_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [pt.id, pt.playlist_id, pt.track_id, pt.position, pt.sort_order, pt.created_at, pt.added_at || pt.created_at]
+      );
+    }
+
+    // 4. Clean up guest rows so they are not duplicated
+    await db.runAsync("DELETE FROM tracks WHERE user_id = 'local_guest'");
+    await db.runAsync("DELETE FROM playlists WHERE user_id = 'local_guest'");
+  });
+
+  return { tracksCount, playlistsCount };
 }

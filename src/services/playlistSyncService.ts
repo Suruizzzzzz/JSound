@@ -18,7 +18,9 @@ import {
   getSetting,
   setSetting,
   getDatabase,
+  getActiveUserId,
 } from '@/lib/database';
+import { usePlayerStore } from '@/store/playerStore';
 import { useSyncProgressStore } from '@/store/syncProgressStore';
 
 export type { SharedPlaylistData };
@@ -84,16 +86,21 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
 
     const userId = session.user.id;
 
-    // 1. Gather local data
-    const localTracks = await getAllTracks();
-    const localPlaylists = await getAllPlaylists();
-    const localPlaylistTracks = await getAllPlaylistTracksRaw();
+    // 1. Gather local data for this authenticated user
+    const localTracks = await getAllTracks(userId);
+    const localPlaylists = await getAllPlaylists(userId);
+    const localPlaylistTracks = await getAllPlaylistTracksRaw(userId);
 
     // 2. Push local tracks to Supabase user_tracks (safe metadata only)
     if (localTracks.length > 0) {
       const remoteTracksPayload = localTracks.map((t) => ({
         id: t.id,
         user_id: userId,
+        youtube_id:
+          t.youtube_id ||
+          (t.source === 'youtube'
+            ? t.id.replace(/^online_youtube_/, '').replace(/^track_yt_/, '').replace(/^yt_/, '')
+            : null),
         title: t.title || 'Unknown Title',
         artist: t.artist || 'Unknown Artist',
         duration: Math.round(t.duration || 0),
@@ -104,6 +111,7 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
             ? t.local_artwork_uri
             : null,
         sort_order: t.sort_order ?? 0,
+        is_playlist_only: t.is_playlist_only ?? 0,
       }));
 
       // Upsert in batches of 50 to prevent packet size overflow
@@ -113,7 +121,15 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
           .from('user_tracks')
           .upsert(batch, { onConflict: 'user_id, id' });
         if (trackErr) {
-          console.warn('Error syncing tracks batch to cloud:', trackErr.message);
+          console.warn('Error syncing tracks batch to cloud, trying fallback schema:', trackErr.message);
+          // Fallback if remote schema hasn't had youtube_id or is_playlist_only migrated yet
+          const strippedBatch = batch.map(({ youtube_id, is_playlist_only, ...rest }: any) => rest);
+          const { error: fallbackErr } = await supabase
+            .from('user_tracks')
+            .upsert(strippedBatch, { onConflict: 'user_id, id' });
+          if (fallbackErr) {
+            console.warn('Fallback sync failed:', fallbackErr.message);
+          }
         }
       }
     }
@@ -221,11 +237,13 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
           newTracksToSave.push({
             id: rTrk.id,
             user_id: userId,
-            youtube_id: rTrk.id.startsWith('track_yt_')
-              ? rTrk.id.replace(/^track_yt_/, '')
-              : rTrk.id.startsWith('yt_')
-              ? rTrk.id.replace(/^yt_/, '')
-              : null,
+            youtube_id:
+              rTrk.youtube_id ||
+              (rTrk.id.startsWith('track_yt_')
+                ? rTrk.id.replace(/^track_yt_/, '')
+                : rTrk.id.startsWith('yt_')
+                ? rTrk.id.replace(/^yt_/, '')
+                : null),
             title: rTrk.title,
             artist: rTrk.artist || 'Unknown Artist',
             local_audio_uri: '',
@@ -235,18 +253,23 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
             is_synced: 1,
             created_at: rTrk.created_at || new Date().toISOString(),
             sort_order: rTrk.sort_order ?? 0,
-            is_playlist_only: 1, // Ensure un-downloaded cloud tracks pulled during sync never leak into All Songs
+            is_playlist_only: rTrk.is_playlist_only ?? 0,
           });
         }
       }
 
       if (newTracksToSave.length > 0) {
-        await saveTracks(newTracksToSave);
+        await saveTracks(newTracksToSave, userId);
+        // If current active user in playerStore is this user, refresh playerStore tracks
+        if (getActiveUserId() === userId) {
+          const updatedTracks = await getAllTracks(userId);
+          usePlayerStore.getState().setTracks(updatedTracks);
+        }
       }
     }
 
     // 8. Trigger background sequential Auto-Download Sync if enabled
-    runAutoDownloadSync().catch((autoErr) => {
+    runAutoDownloadSync(userId).catch((autoErr) => {
       console.warn('[AutoDownload] Background sync task error:', autoErr);
     });
 
@@ -276,12 +299,13 @@ export async function isTrackAudioMissing(track: Track): Promise<boolean> {
  * Iterates through synced tracks missing local audio and downloads them sequentially
  * using the live sync progress store.
  */
-export async function runAutoDownloadSync(): Promise<void> {
+export async function runAutoDownloadSync(userId?: string): Promise<void> {
   const isEnabled = (await getSetting('auto_download_synced', 'true')) === 'true';
   if (!isEnabled) return;
 
   try {
-    const allTracks = await getAllTracks();
+    const uId = userId || getActiveUserId();
+    const allTracks = await getAllTracks(uId);
     const missing: Track[] = [];
     for (const t of allTracks) {
       if (await isTrackAudioMissing(t)) {
@@ -360,7 +384,7 @@ export async function sharePlaylist(
     const userId = session.user.id;
 
     // Check if playlist already has a share code
-    const playlists = await getAllPlaylists();
+    const playlists = await getAllPlaylists(userId);
     const target = playlists.find((p) => p.id === playlistId);
     if (!target) {
       return { success: false, error: 'Playlist not found.' };
@@ -372,7 +396,7 @@ export async function sharePlaylist(
     await setPlaylistShareCode(playlistId, shareCode);
 
     // 2. Fetch tracks in this playlist
-    const tracks = await getPlaylistTracks(playlistId);
+    const tracks = await getPlaylistTracks(playlistId, userId);
 
     // 3. Upsert tracks to Supabase user_tracks so public read can query them
     if (tracks.length > 0) {
@@ -1318,4 +1342,102 @@ export async function deletePlaylistWithSync(playlist: Playlist): Promise<void> 
   }
 
   await deletePlaylist(playlist.id);
+}
+
+export interface LibraryBackupData {
+  version: number;
+  exported_at: string;
+  user_id: string;
+  tracks: Track[];
+  playlists: Playlist[];
+  playlist_tracks: {
+    playlist_id: string;
+    track_id: string;
+    position: number;
+    sort_order: number;
+    added_at: string;
+  }[];
+}
+
+/**
+ * Serializes the user's entire local music library and playlists into an offline JSON backup.
+ */
+export async function exportLibraryBackupJson(userId?: string): Promise<string> {
+  const uId = userId || getActiveUserId();
+  const tracks = await getAllTracks(uId);
+  const playlists = await getAllPlaylists(uId);
+  const playlistTracks = await getAllPlaylistTracksRaw(uId);
+
+  const backup: LibraryBackupData = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    user_id: uId,
+    tracks,
+    playlists,
+    playlist_tracks: playlistTracks.map((pt) => ({
+      playlist_id: pt.playlist_id,
+      track_id: pt.track_id,
+      position: pt.position ?? pt.sort_order ?? 0,
+      sort_order: pt.sort_order ?? pt.position ?? 0,
+      added_at: pt.added_at || pt.created_at || new Date().toISOString(),
+    })),
+  };
+
+  return JSON.stringify(backup, null, 2);
+}
+
+/**
+ * Imports a previously exported JSON backup into the user's local SQLite database.
+ */
+export async function importLibraryBackupJson(
+  jsonString: string,
+  targetUserId?: string
+): Promise<{ success: boolean; tracksCount: number; playlistsCount: number; error?: string }> {
+  try {
+    const data: LibraryBackupData = JSON.parse(jsonString);
+    if (!data || !Array.isArray(data.tracks) || !Array.isArray(data.playlists)) {
+      return { success: false, tracksCount: 0, playlistsCount: 0, error: 'Invalid backup file format.' };
+    }
+
+    const uId = targetUserId || getActiveUserId();
+    const tracksToImport: Track[] = data.tracks.map((t) => ({
+      ...t,
+      user_id: uId,
+      local_audio_uri: t.local_audio_uri || '',
+    }));
+
+    if (tracksToImport.length > 0) {
+      await saveTracks(tracksToImport, uId);
+    }
+
+    for (const p of data.playlists) {
+      await createPlaylist(p.name, p.cover_uri, p.share_code, p.id, uId, p.is_public ?? 0);
+    }
+
+    if (Array.isArray(data.playlist_tracks)) {
+      for (const pt of data.playlist_tracks) {
+        await upsertPlaylistTrack(pt.playlist_id, pt.track_id, pt.position, pt.sort_order, pt.added_at);
+      }
+    }
+
+    // Refresh player store if importing into active user
+    const currentActive = getActiveUserId();
+    if (uId === currentActive) {
+      const updatedTracks = await getAllTracks(uId);
+      usePlayerStore.getState().setTracks(updatedTracks);
+    }
+
+    return {
+      success: true,
+      tracksCount: tracksToImport.length,
+      playlistsCount: data.playlists.length,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      tracksCount: 0,
+      playlistsCount: 0,
+      error: err.message || 'Import failed.',
+    };
+  }
 }

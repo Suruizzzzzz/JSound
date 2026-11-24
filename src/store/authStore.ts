@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getSetting, setSetting } from '@/lib/database';
+import { getSetting, setSetting, registerActiveUserIdGetter } from '@/lib/database';
 import { supabase } from '@/services/supabase';
 import { authService } from '@/services/authService';
 import { syncPlaylistsToCloud as syncWithCloud } from '@/services/playlistSyncService';
@@ -42,7 +42,62 @@ export interface AuthState {
   signInWithEmail: (email: string, password?: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   syncPlaylistsToCloud: () => Promise<void>;
+  importGuestLibraryToAccount: () => Promise<{ tracksCount: number; playlistsCount: number }>;
   signOut: () => Promise<void>;
+}
+
+export function getCurrentUserId(): string {
+  const user = useAuthStore.getState().user;
+  if (user?.is_logged_in && user.id && user.id !== 'local_guest') {
+    return user.id;
+  }
+  return 'local_guest';
+}
+
+registerActiveUserIdGetter(getCurrentUserId);
+
+let migrationInProgress: Promise<void> | null = null;
+
+/**
+ * Automatically migrates any offline guest music (user_id = 'local_guest') into
+ * the logged-in user's account, reloads the player store with the combined library,
+ * and kicks off cloud synchronization.
+ */
+export async function handleUserLoginTransition(userId: string): Promise<void> {
+  if (!userId || userId === 'local_guest') return;
+
+  if (migrationInProgress) {
+    await migrationInProgress;
+    return;
+  }
+
+  migrationInProgress = (async () => {
+    try {
+      const { claimGuestLibrary } = await import('@/lib/database');
+      const { tracksCount, playlistsCount } = await claimGuestLibrary(userId);
+
+      // Refresh player store tracks for this user
+      const { getAllTracks } = await import('@/repositories/trackRepository');
+      const { usePlayerStore } = await import('@/store/playerStore');
+      const userTracks = await getAllTracks(userId);
+      usePlayerStore.getState().setTracks(userTracks);
+
+      // Trigger cloud sync to upload newly claimed tracks & pull remote tracks
+      useAuthStore.getState().syncPlaylistsToCloud().catch((syncErr) => {
+        console.warn('Post-login cloud sync error:', syncErr);
+      });
+
+      if (tracksCount > 0 || playlistsCount > 0) {
+        console.log(`[Auth] Auto-migrated ${tracksCount} guest tracks and ${playlistsCount} guest playlists to user ${userId}`);
+      }
+    } catch (err) {
+      console.warn('[Auth] Failed to auto-migrate guest library on sign-in:', err);
+    } finally {
+      migrationInProgress = null;
+    }
+  })();
+
+  await migrationInProgress;
 }
 
 let authListenerSubscribed = false;
@@ -92,6 +147,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               },
               isGuestSession: false,
             });
+            await handleUserLoginTransition(sbUser.id);
           } else if (event === 'SIGNED_OUT') {
             const savedName = await getSetting('profile_display_name', 'JStream Listener');
             const savedAvatar = await getSetting('profile_avatar_uri', null);
@@ -157,6 +213,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           },
           isGuestSession: false,
         });
+        await handleUserLoginTransition(sbUser.id);
         return;
       }
 
@@ -268,6 +325,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
+      await handleUserLoginTransition(sbUser.id);
       return { needsConfirmation: false, identityCollision: false };
     }
     return { needsConfirmation: true, identityCollision: false };
@@ -309,6 +367,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
+      await handleUserLoginTransition(sbUser.id);
     }
   },
 
@@ -316,9 +375,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!password) {
       // Fallback for tests or direct calls
       const username = email.split('@')[0] || 'User';
+      const fallbackId = `user_${Date.now()}`;
       set({
         user: {
-          id: `user_${Date.now()}`,
+          id: fallbackId,
           name: username.charAt(0).toUpperCase() + username.slice(1),
           email: email || 'user@example.com',
           avatar_url: null,
@@ -328,6 +388,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
+      await handleUserLoginTransition(fallbackId);
       return;
     }
 
@@ -362,6 +423,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
+      await handleUserLoginTransition(sbUser.id);
     }
   },
 
@@ -398,6 +460,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         isGuestSession: false,
       });
+      await handleUserLoginTransition(sbUser.id);
     }
   },
 
@@ -491,11 +554,61 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  importGuestLibraryToAccount: async () => {
+    const currentUser = get().user;
+    if (!currentUser.is_logged_in || currentUser.id === 'local_guest') {
+      return { tracksCount: 0, playlistsCount: 0 };
+    }
+
+    try {
+      const { claimGuestLibrary } = await import('@/lib/database');
+      const result = await claimGuestLibrary(currentUser.id);
+
+      // Refresh store with newly claimed tracks
+      const { getAllTracks } = await import('@/repositories/trackRepository');
+      const { usePlayerStore } = await import('@/store/playerStore');
+      const userTracks = await getAllTracks(currentUser.id);
+      usePlayerStore.getState().setTracks(userTracks);
+
+      // Trigger cloud sync in background
+      get().syncPlaylistsToCloud().catch(() => {});
+
+      return result;
+    } catch (claimErr) {
+      console.warn('Error claiming guest library:', claimErr);
+      return { tracksCount: 0, playlistsCount: 0 };
+    }
+  },
+
   signOut: async () => {
     try {
       await authService.signOut();
     } catch (e) {
       console.warn('Error during Supabase signOut:', e);
+    }
+
+    try {
+      // 1. Stop and release any active audio playback
+      const { stopAndUnloadAudio } = await import('@/services/audioService');
+      await stopAndUnloadAudio();
+    } catch (audioErr) {
+      console.warn('Error stopping audio on signOut:', audioErr);
+    }
+
+    try {
+      // 2. Clear in-memory library & playback queue
+      const { usePlayerStore } = await import('@/store/playerStore');
+      usePlayerStore.setState({
+        currentTrack: null,
+        queue: [],
+        tracks: [],
+        isPlaying: false,
+        position: 0,
+        duration: 0,
+        playbackContext: null,
+      });
+    } catch (storeErr) {
+      console.warn('Error resetting player store on signOut:', storeErr);
     }
 
     const savedName = await getSetting('profile_display_name', 'JStream Listener');

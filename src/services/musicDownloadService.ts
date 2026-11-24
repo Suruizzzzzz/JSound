@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Innertube } from 'youtubei.js';
 import { Track } from '@/types/music';
 import { saveTrack, getAllTracks } from '@/repositories/trackRepository';
+import { getActiveUserId } from '@/lib/database';
 import { usePlayerStore } from '@/store/playerStore';
 
 export interface OnlineTrackResult {
@@ -868,66 +869,75 @@ export async function downloadTrackToOfflineLibrary(
   const fileName = `${track.source}_${track.id}_${cleanArtist}_${cleanTitle}${ext}`;
   const fileUri = `${tracksDir}${fileName}`;
 
-  // Notify initial progress
-  onProgress?.(0);
+  // Check if file already exists on device storage with valid size (> 10 KB)
+  // This allows multiple users on the same device to instantly share downloaded audio without duplicate network usage
+  const existingFileInfo = await FileSystem.getInfoAsync(fileUri);
+  let finalAudioUri = fileUri;
 
-  const downloadHeaders: Record<string, string> = headers || {
-    'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
-  };
+  if (existingFileInfo.exists && (existingFileInfo.size ?? 0) > 10000) {
+    onProgress?.(100);
+  } else {
+    // Notify initial progress
+    onProgress?.(0);
 
-  const downloadResumable = FileSystem.createDownloadResumable(
-    streamUrl,
-    fileUri,
-    {
-      headers: downloadHeaders,
-    },
-    (downloadProgress) => {
-      const totalBytes = downloadProgress.totalBytesExpectedToWrite;
-      const writtenBytes = downloadProgress.totalBytesWritten;
-      if (totalBytes > 0) {
-        const pct = Math.min(100, Math.max(0, Math.round((writtenBytes / totalBytes) * 100)));
-        onProgress?.(pct);
+    const downloadHeaders: Record<string, string> = headers || {
+      'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
+    };
+
+    const downloadResumable = FileSystem.createDownloadResumable(
+      streamUrl,
+      fileUri,
+      {
+        headers: downloadHeaders,
+      },
+      (downloadProgress) => {
+        const totalBytes = downloadProgress.totalBytesExpectedToWrite;
+        const writtenBytes = downloadProgress.totalBytesWritten;
+        if (totalBytes > 0) {
+          const pct = Math.min(100, Math.max(0, Math.round((writtenBytes / totalBytes) * 100)));
+          onProgress?.(pct);
+        }
       }
-    }
-  );
+    );
 
-  activeDownloads.set(track.id, { resumable: downloadResumable, fileUri });
+    activeDownloads.set(track.id, { resumable: downloadResumable, fileUri });
 
-  let downloadResult: FileSystem.FileSystemDownloadResult | undefined;
-  try {
-    downloadResult = await downloadResumable.downloadAsync();
-    if (!downloadResult || !downloadResult.uri) {
-      throw new Error('Audio download failed. No local URI returned.');
-    }
+    try {
+      const downloadResult = await downloadResumable.downloadAsync();
+      if (!downloadResult || !downloadResult.uri) {
+        throw new Error('Audio download failed. No local URI returned.');
+      }
 
-    // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
-    const fileInfo = await FileSystem.getInfoAsync(fileUri);
-    if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
+      // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
+        try {
+          await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        } catch {
+          // ignore
+        }
+        throw new Error(
+          `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
+        );
+      }
+      finalAudioUri = downloadResult.uri;
+    } catch (err: any) {
+      // If cancelled or failed, ensure partial file is wiped
       try {
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        const info = await FileSystem.getInfoAsync(fileUri);
+        if (info.exists) {
+          await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        }
       } catch {
         // ignore
       }
-      throw new Error(
-        `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
-      );
+      throw err;
+    } finally {
+      activeDownloads.delete(track.id);
     }
-  } catch (err: any) {
-    // If cancelled or failed, ensure partial file is wiped
-    try {
-      const info = await FileSystem.getInfoAsync(fileUri);
-      if (info.exists) {
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
-      }
-    } catch {
-      // ignore
-    }
-    throw err;
-  } finally {
-    activeDownloads.delete(track.id);
-  }
 
-  onProgress?.(100);
+    onProgress?.(100);
+  }
 
   // Optional: save thumbnail locally for offline display
   let localArtworkUri: string | null = track.thumbnailUrl;
@@ -952,15 +962,16 @@ export async function downloadTrackToOfflineLibrary(
   }
 
   const isPlaylistOnly = options?.isPlaylistOnly ? 1 : 0;
+  const activeUserId = getActiveUserId();
 
   // Insert into SQLite database
   const newTrack: Track = {
     id: options?.targetTrackId || `online_${track.source}_${track.id}`,
-    user_id: 'local_guest',
+    user_id: activeUserId,
     youtube_id: track.source === 'youtube' ? track.id : null,
     title: track.title,
     artist: track.artist,
-    local_audio_uri: downloadResult.uri,
+    local_audio_uri: finalAudioUri,
     local_artwork_uri: localArtworkUri,
     duration: track.duration || 0,
     source: 'youtube', // valid according to SQLite CHECK(source IN ('local', 'youtube'))
@@ -969,11 +980,11 @@ export async function downloadTrackToOfflineLibrary(
     is_playlist_only: isPlaylistOnly,
   };
 
-  await saveTrack(newTrack);
+  await saveTrack(newTrack, activeUserId);
 
   // Refresh playerStore ONLY if this is a personal library track (not playlist-isolated)
   if (!isPlaylistOnly) {
-    const allTracks = await getAllTracks();
+    const allTracks = await getAllTracks(activeUserId);
     usePlayerStore.getState().setTracks(allTracks);
   }
 
