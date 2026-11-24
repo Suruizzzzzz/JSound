@@ -122,3 +122,195 @@ safeWrite(audioModuleTypesDtsPath, (content) => {
     previousTrack?(): void;`;
   return content.includes(target) ? content.replace(target, addition) : content;
 });
+
+// 5. Patch AudioControlsService.kt
+const audioControlsServiceKtPath = path.join(
+  projectRoot,
+  'node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt'
+);
+
+safeWrite(audioControlsServiceKtPath, (content) => {
+  // 5a. Bug 1: ForwardingPlayer unconditionally declares Next/Previous available commands and overrides seekToNext/Previous
+  if (!content.includes('override fun seekToNext()')) {
+    const target = `      override fun seekBack() {
+        seekTo((currentPosition - backwardMs).coerceAtLeast(0))
+      }
+
+      override fun getAvailableCommands(): Player.Commands {
+        val commands = super.getAvailableCommands().buildUpon()
+        if (isLive) {
+          commands.remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+        }
+        return commands.build()
+      }`;
+
+    const replacement = `      override fun seekBack() {
+        seekTo((currentPosition - backwardMs).coerceAtLeast(0))
+      }
+
+      override fun seekToNext() {
+        playable.nextTrack()
+      }
+
+      override fun seekToNextMediaItem() {
+        playable.nextTrack()
+      }
+
+      override fun hasNextMediaItem(): Boolean = true
+
+      override fun seekToPrevious() {
+        playable.previousTrack()
+      }
+
+      override fun seekToPreviousMediaItem() {
+        playable.previousTrack()
+      }
+
+      override fun hasPreviousMediaItem(): Boolean = true
+
+      override fun getAvailableCommands(): Player.Commands {
+        val commands = super.getAvailableCommands().buildUpon()
+        if (isLive) {
+          commands.remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+        }
+        commands.add(Player.COMMAND_SEEK_TO_NEXT)
+        commands.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+        commands.add(Player.COMMAND_SEEK_TO_PREVIOUS)
+        commands.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        return commands.build()
+      }`;
+
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  // 5b. Bug 2: setPlayableOptions preserves existing MediaSession when playable == currentPlayable && mediaSession != null
+  if (!content.includes('if (playable == currentPlayable && mediaSession != null)')) {
+    const target = `  fun setPlayableOptions(
+    playable: LockScreenPlayable,
+    metadata: Metadata?,
+    options: AudioLockScreenOptions?
+  ) {
+    if (playable == currentPlayable) {
+      currentMetadata = metadata
+      currentOptions = options
+      updateArtwork(metadata, postUpdate = false)
+
+      mediaSession?.release()
+      sessionMetadataPlayer = null
+      appContext?.mainQueue?.launch {
+        val context = appContext?.reactContext ?: return@launch
+        val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(playable, options)).apply {
+          updateMetadata(metadata)
+        }
+        val session = MediaSession.Builder(context, sessionPlayer)
+          .setId("ExpoAudioLockScreenSession_\${playable.player.hashCode()}")
+          .setCallback(AudioMediaSessionCallback(this@AudioControlsService))
+          .build()
+
+        playable.mediaSession.release()
+        playable.mediaSession = session
+
+        addSession(session)
+        mediaSession = session
+        sessionMetadataPlayer = sessionPlayer
+
+        updateSessionCustomLayout(playable.player.isPlaying)
+        postOrStartForegroundNotification(startInForeground = false)
+      }
+    } else {
+      setActivePlayableInternal(playable, metadata, options)
+    }
+  }`;
+
+    const replacement = `  fun setPlayableOptions(
+    playable: LockScreenPlayable,
+    metadata: Metadata?,
+    options: AudioLockScreenOptions?
+  ) {
+    if (playable == currentPlayable && mediaSession != null) {
+      currentMetadata = metadata
+      currentOptions = options
+      sessionMetadataPlayer?.updateMetadata(metadata)
+      updateArtwork(metadata, postUpdate = false)
+      updateSessionCustomLayout(playable.player.isPlaying)
+      postOrStartForegroundNotification(startInForeground = false)
+    } else {
+      setActivePlayableInternal(playable, metadata, options)
+    }
+  }`;
+
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  // 5c. Bug 3: buildNotification adds deleteIntent to notify service on notification dismissal/swipe
+  if (!content.includes('.setDeleteIntent(buildActionPendingIntent(ACTION_DISMISS))')) {
+    const target = `      .setContentIntent(buildContentIntent())
+      .setAutoCancel(false)`;
+    const replacement = `      .setContentIntent(buildContentIntent())
+      .setDeleteIntent(buildActionPendingIntent(ACTION_DISMISS))
+      .setAutoCancel(false)`;
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  // 5d. Bug 3: onStartCommand handles ACTION_DISMISS
+  if (!content.includes('if (intent.action == ACTION_DISMISS)')) {
+    const target = `    context.mainQueue.launch {
+      when (intent?.action) {
+        ACTION_PLAY -> {`;
+
+    const replacement = `    if (intent.action == ACTION_DISMISS) {
+      context.mainQueue.launch {
+        currentPlayer.pause()
+        hideNotification()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+      }
+      return super.onStartCommand(intent, flags, startId)
+    }
+
+    context.mainQueue.launch {
+      when (intent?.action) {
+        ACTION_PLAY -> {`;
+
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  // 5e. Bug 3: Declare ACTION_DISMISS in companion object
+  if (!content.includes('ACTION_DISMISS = "expo.modules.audio.action.DISMISS"')) {
+    const target = `    const val ACTION_PREVIOUS_TRACK = "expo.modules.audio.action.PREVIOUS_TRACK"`;
+    const replacement = `    const val ACTION_PREVIOUS_TRACK = "expo.modules.audio.action.PREVIOUS_TRACK"
+    const val ACTION_DISMISS = "expo.modules.audio.action.DISMISS"`;
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  // 5f. Bug 3: onTaskRemoved cleans up service when app task is swiped away while paused
+  if (!content.includes('override fun onTaskRemoved(')) {
+    const target = `  override fun onDestroy() {
+    super.onDestroy()`;
+    const replacement = `  override fun onTaskRemoved(rootIntent: Intent?) {
+    super.onTaskRemoved(rootIntent)
+    if (currentPlayable?.player?.isPlaying != true) {
+      hideNotification()
+      stopForeground(STOP_FOREGROUND_REMOVE)
+      stopSelf()
+    }
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()`;
+    if (content.includes(target)) {
+      content = content.replace(target, replacement);
+    }
+  }
+
+  return content;
+});
