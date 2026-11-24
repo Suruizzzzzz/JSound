@@ -274,12 +274,18 @@ export default function TrackItem({
                   </Text>
                 </>
               ) : isCloud ? (
-                <>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={styles.metaDot}>•</Text>
+                  <Ionicons
+                    name="cloud-outline"
+                    size={12}
+                    color={theme.textSecondary}
+                    style={{ marginRight: 3 }}
+                  />
                   <Text style={{ fontSize: 11, color: theme.textSecondary, fontWeight: '600' }}>
-                    ☁ Cloud
+                    Cloud
                   </Text>
-                </>
+                </View>
               ) : isUnavailable ? (
                 <>
                   <Text style={styles.metaDot}>•</Text>
