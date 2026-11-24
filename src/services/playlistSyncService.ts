@@ -1018,6 +1018,8 @@ export async function importSharedPlaylist(
   // 2. Ownership Check: Creator (is_imported = 0) vs Imported (is_imported = 1)
   const { data: authData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
   const currentUserId = authData?.session?.user?.id;
+  const activeUserId = getActiveUserId();
+  const effectiveUserId = currentUserId || (activeUserId !== 'local_guest' ? activeUserId : undefined) || currentUserId || activeUserId || 'local_guest';
   const isOriginalCreator = Boolean(
     (currentUserId && shared.user_id && currentUserId === shared.user_id) ||
     (existingPl && existingPl.is_imported === 0 && existingPl.user_id !== 'local_guest' && existingPl.user_id !== 'imported')
@@ -1026,7 +1028,7 @@ export async function importSharedPlaylist(
 
   const localPlaylist: Playlist = {
     id: playlistId,
-    user_id: existingPl?.user_id || (isOriginalCreator && currentUserId ? currentUserId : 'local_guest'),
+    user_id: existingPl?.user_id || effectiveUserId,
     name: cleanName,
     cover_uri: resolvedCover || existingPl?.cover_uri || null,
     share_code: shared.share_code || null,
@@ -1137,7 +1139,7 @@ export async function importSharedPlaylist(
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             targetTrackId,
-            'local_guest',
+            effectiveUserId,
             targetYoutubeId,
             t.title || 'Unknown Title',
             t.artist || 'Unknown Artist',
@@ -1341,7 +1343,7 @@ export async function deletePlaylistWithSync(playlist: Playlist): Promise<void> 
     }
   }
 
-  await deletePlaylist(playlist.id);
+  await deletePlaylist(playlist.id, playlist.user_id);
 }
 
 export interface LibraryBackupData {

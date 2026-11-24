@@ -117,17 +117,17 @@ function attachStatusListener(player: AudioPlayer) {
     ) {
       hasSyncedLockScreenForCurrentTrack = true;
       try {
-        if (typeof (player as any).updateLockScreenMetadata === 'function') {
-          const res: any = (player as any).updateLockScreenMetadata(currentTrackMetadata);
-          if (res && typeof res.catch === 'function') {
-            res.catch(() => {});
-          }
-        } else if (typeof player.setActiveForLockScreen === 'function') {
+        if (typeof player.setActiveForLockScreen === 'function') {
           const res: any = (player as any).setActiveForLockScreen(
             true,
             currentTrackMetadata,
             DEFAULT_LOCK_SCREEN_OPTIONS
           );
+          if (res && typeof res.catch === 'function') {
+            res.catch(() => {});
+          }
+        } else if (typeof (player as any).updateLockScreenMetadata === 'function') {
+          const res: any = (player as any).updateLockScreenMetadata(currentTrackMetadata);
           if (res && typeof res.catch === 'function') {
             res.catch(() => {});
           }
@@ -216,22 +216,23 @@ export async function loadAndPlayAudio(
         attachStatusListener(playerInstance);
 
         // Reuse existing player with .replace()
+        hasSyncedLockScreenForCurrentTrack = false;
         playerInstance.replace(source);
 
         // Proactively update lock screen controls and metadata immediately on replace
         if (!isExpoGo) {
           try {
-            if (typeof (playerInstance as any).updateLockScreenMetadata === 'function') {
-              const res: any = (playerInstance as any).updateLockScreenMetadata(currentTrackMetadata);
-              if (res && typeof res.catch === 'function') {
-                res.catch(() => {});
-              }
-            } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
+            if (typeof playerInstance.setActiveForLockScreen === 'function') {
               const res: any = (playerInstance as any).setActiveForLockScreen(
                 true,
                 currentTrackMetadata,
                 DEFAULT_LOCK_SCREEN_OPTIONS
               );
+              if (res && typeof res.catch === 'function') {
+                res.catch(() => {});
+              }
+            } else if (typeof (playerInstance as any).updateLockScreenMetadata === 'function') {
+              const res: any = (playerInstance as any).updateLockScreenMetadata(currentTrackMetadata);
               if (res && typeof res.catch === 'function') {
                 res.catch(() => {});
               }
@@ -405,17 +406,17 @@ export function updateAudioMetadata(metadata: AudioMetadata): void {
   currentTrackMetadata = metadata;
   if (isExpoGo || !playerInstance) return;
   try {
-    if (typeof (playerInstance as any).updateLockScreenMetadata === 'function') {
-      const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
-      if (res && typeof res.catch === 'function') {
-        res.catch(() => {});
-      }
-    } else if (typeof playerInstance.setActiveForLockScreen === 'function') {
+    if (typeof playerInstance.setActiveForLockScreen === 'function') {
       const res: any = (playerInstance as any).setActiveForLockScreen(
         true,
         metadata,
         DEFAULT_LOCK_SCREEN_OPTIONS
       );
+      if (res && typeof res.catch === 'function') {
+        res.catch(() => {});
+      }
+    } else if (typeof (playerInstance as any).updateLockScreenMetadata === 'function') {
+      const res: any = (playerInstance as any).updateLockScreenMetadata(metadata);
       if (res && typeof res.catch === 'function') {
         res.catch(() => {});
       }

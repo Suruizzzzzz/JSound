@@ -229,15 +229,16 @@ safeWrite(audioControlsServiceKtPath, (content) => {
     metadata: Metadata?,
     options: AudioLockScreenOptions?
   ) {
+    val effectiveOptions = options ?: currentOptions
     if (playable == currentPlayable && mediaSession != null) {
       currentMetadata = metadata
-      currentOptions = options
+      currentOptions = effectiveOptions
       sessionMetadataPlayer?.updateMetadata(metadata)
       updateArtwork(metadata, postUpdate = false)
       updateSessionCustomLayout(playable.player.isPlaying)
       postOrStartForegroundNotification(startInForeground = false)
     } else {
-      setActivePlayableInternal(playable, metadata, options)
+      setActivePlayableInternal(playable, metadata, effectiveOptions)
     }
   }`;
 
@@ -312,5 +313,69 @@ safeWrite(audioControlsServiceKtPath, (content) => {
     }
   }
 
+  // 5g. updateSessionCustomLayout: Ensure Previous / Next buttons always appear when supported
+  if (!content.includes('val showPrev = currentOptions?.showPreviousTrack')) {
+    const prevTarget = `    if (currentOptions?.showPreviousTrack == true && playable?.supportsPreviousTrack == true) {`;
+    const prevReplacement = `    val showPrev = currentOptions?.showPreviousTrack ?: (playable?.supportsPreviousTrack == true)
+    if (showPrev && playable?.supportsPreviousTrack == true) {`;
+    if (content.includes(prevTarget)) {
+      content = content.replace(prevTarget, prevReplacement);
+    }
+  }
+
+  if (!content.includes('val showNext = currentOptions?.showNextTrack')) {
+    const nextTarget = `    if (currentOptions?.showNextTrack == true && playable?.supportsNextTrack == true) {`;
+    const nextReplacement = `    val showNext = currentOptions?.showNextTrack ?: (playable?.supportsNextTrack == true)
+    if (showNext && playable?.supportsNextTrack == true) {`;
+    if (content.includes(nextTarget)) {
+      content = content.replace(nextTarget, nextReplacement);
+    }
+  }
+
+  // 5h. Add onTimelineChanged & onMediaItemTransition to player listener for live lock-screen duration
+  if (!content.includes('override fun onTimelineChanged')) {
+    const listenerTarget = `      override fun onPlaybackStateChanged(playbackState: Int) {
+        postOrStartForegroundNotification(startInForeground = false)
+      }`;
+    const listenerReplacement = `      override fun onPlaybackStateChanged(playbackState: Int) {
+        postOrStartForegroundNotification(startInForeground = false)
+      }
+
+      override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+        postOrStartForegroundNotification(startInForeground = false)
+      }
+
+      override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+        postOrStartForegroundNotification(startInForeground = false)
+      }`;
+    if (content.includes(listenerTarget)) {
+      content = content.replace(listenerTarget, listenerReplacement);
+    }
+  }
+
   return content;
+});
+
+// 6. Patch MetadataInjectingPlayer.kt (dispatch timeline and transition events so duration & seekbar update)
+const metadataInjectingPlayerKtPath = path.join(
+  projectRoot,
+  'node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt'
+);
+
+safeWrite(metadataInjectingPlayerKtPath, (content) => {
+  if (content.includes('Player.EVENT_TIMELINE_CHANGED')) return content;
+  const target = `    val events = Player.Events(
+      FlagSet.Builder()
+        .add(Player.EVENT_MEDIA_METADATA_CHANGED)
+        .build()
+    )`;
+  const addition = `    val events = Player.Events(
+      FlagSet.Builder()
+        .add(Player.EVENT_MEDIA_METADATA_CHANGED)
+        .add(Player.EVENT_TIMELINE_CHANGED)
+        .add(Player.EVENT_MEDIA_ITEM_TRANSITION)
+        .add(Player.EVENT_PLAYBACK_STATE_CHANGED)
+        .build()
+    )`;
+  return content.includes(target) ? content.replace(target, addition) : content;
 });

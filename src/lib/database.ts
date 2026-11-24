@@ -91,7 +91,22 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_user_id_id ON tracks (user_id, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_id_id ON playlists (user_id, id);
   `);
+
+  try {
+    await db.execAsync("ALTER TABLE tracks ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local_guest';");
+  } catch {
+    // Column already exists, safe to ignore
+  }
+
+  try {
+    await db.execAsync("ALTER TABLE playlists ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local_guest';");
+  } catch {
+    // Column already exists, safe to ignore
+  }
 
   try {
     await db.execAsync('ALTER TABLE tracks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;');
@@ -141,6 +156,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
         CREATE INDEX IF NOT EXISTS idx_tracks_id ON tracks (id);
         CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks (title);
         CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks (artist);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_user_id_id ON tracks (user_id, id);
         PRAGMA foreign_keys = ON;
       `);
       console.log('✓ Migrated tracks to composite PRIMARY KEY (user_id, id)');
@@ -180,12 +196,23 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
         ALTER TABLE playlists_new RENAME TO playlists;
         CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists (user_id);
         CREATE INDEX IF NOT EXISTS idx_playlists_id ON playlists (id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_id_id ON playlists (user_id, id);
         PRAGMA foreign_keys = ON;
       `);
       console.log('✓ Migrated playlists to composite PRIMARY KEY (user_id, id)');
     }
   } catch (migErr) {
     console.warn('Playlists composite PK migration warning:', migErr);
+  }
+
+  // Ensure unique indexes exist unconditionally for ON CONFLICT(user_id, id) matching
+  try {
+    await db.execAsync(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_user_id_id ON tracks (user_id, id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_id_id ON playlists (user_id, id);
+    `);
+  } catch {
+    // Ignore if already present
   }
 
   // Backfill: Remove existing un-downloaded cloud tracks from "Your Library -> All Songs"
@@ -561,7 +588,10 @@ export async function deletePlaylist(playlistId: string, userId?: string): Promi
   const uId = userId || getActiveUserId();
   await db.withTransactionAsync(async () => {
     await db.runAsync('DELETE FROM playlist_tracks WHERE playlist_id = ?', [playlistId]);
-    await db.runAsync('DELETE FROM playlists WHERE id = ? AND user_id = ?', [playlistId, uId]);
+    await db.runAsync(
+      'DELETE FROM playlists WHERE id = ? AND (user_id = ? OR user_id = ? OR user_id = "local_guest")',
+      [playlistId, uId, userId || uId]
+    );
   });
 }
 
@@ -704,8 +734,7 @@ export async function getPlaylistTracks(playlistId: string, userId?: string): Pr
     `SELECT t.*
      FROM tracks t
      JOIN playlist_tracks pt ON t.id = pt.track_id
-     JOIN playlists p ON pt.playlist_id = p.id AND t.user_id = p.user_id
-     WHERE pt.playlist_id = ? AND p.user_id = ?
+     WHERE pt.playlist_id = ? AND (t.user_id = ? OR t.user_id = 'local_guest')
      ORDER BY COALESCE(pt.sort_order, pt.position, 0) ASC, pt.created_at ASC`,
     [playlistId, uId]
   );
@@ -731,7 +760,7 @@ export async function getPlaylistsContainingTrack(trackId: string, userId?: stri
     `SELECT DISTINCT pt.playlist_id
      FROM playlist_tracks pt
      JOIN playlists p ON pt.playlist_id = p.id
-     WHERE pt.track_id = ? AND p.user_id = ?`,
+     WHERE pt.track_id = ? AND (p.user_id = ? OR p.user_id = 'local_guest')`,
     [trackId, uId]
   );
   return rows.map((r) => r.playlist_id);
@@ -749,7 +778,7 @@ export async function getPlaylistsMembershipForTracks(
     `SELECT pt.playlist_id, COUNT(pt.track_id) as count
      FROM playlist_tracks pt
      JOIN playlists p ON pt.playlist_id = p.id
-     WHERE p.user_id = ? AND pt.track_id IN (${placeholders})
+     WHERE (p.user_id = ? OR p.user_id = 'local_guest') AND pt.track_id IN (${placeholders})
      GROUP BY pt.playlist_id`,
     [uId, ...trackIds]
   );

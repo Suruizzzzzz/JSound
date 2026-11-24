@@ -21,7 +21,7 @@ export async function getTrackById(id: string, userId: string = getActiveUserId(
 
 export async function saveTrack(track: Track, userId?: string): Promise<void> {
   const db = await getDatabase();
-  const uId = userId || track.user_id || getActiveUserId();
+  const uId = userId || track.user_id || getActiveUserId() || 'local_guest';
   const now = track.created_at || new Date().toISOString();
 
   await db.runAsync(
@@ -62,7 +62,7 @@ export async function saveTracks(tracks: Track[], userId?: string): Promise<void
 
   await db.withTransactionAsync(async () => {
     for (const track of tracks) {
-      const uId = userId || track.user_id || getActiveUserId();
+      const uId = userId || track.user_id || getActiveUserId() || 'local_guest';
       const now = track.created_at || new Date().toISOString();
 
       await db.runAsync(
