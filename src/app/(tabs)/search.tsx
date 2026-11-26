@@ -99,6 +99,7 @@ export default function SearchScreen() {
   const [onlineResults, setOnlineResults] = useState<OnlineTrackResult[]>([]);
   const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
   const [resolvingTrackId, setResolvingTrackId] = useState<string | null>(null);
+  const streamTapSeqRef = useRef<number>(0);
 
   // Error modal state
   const [modalConfig, setModalConfig] = useState<{
@@ -267,6 +268,9 @@ export default function SearchScreen() {
     const savedTrack = findSavedTrack(item);
 
     if (savedTrack) {
+      // Cancel any in-flight online stream tap when playing a saved offline track
+      streamTapSeqRef.current += 1;
+      setResolvingTrackId(null);
       // Saved locally: ensure immediate autoplay and seed Artist Radio
       if (currentTrack?.id === savedTrack.id) {
         await togglePlayPause();
@@ -283,9 +287,10 @@ export default function SearchScreen() {
     // Streaming track: ensure immediate autoplay
     const streamTrackId = `stream_${item.source}_${item.id}`;
     if (currentTrack?.id === streamTrackId) {
+      streamTapSeqRef.current += 1;
+      setResolvingTrackId(null);
       if (!isPlaying) {
-        await resumeAudio();
-        usePlayerStore.setState({ isPlaying: true });
+        await togglePlayPause();
       } else {
         await usePlayerStore.getState().seekTo(0);
         await resumeAudio();
@@ -294,10 +299,13 @@ export default function SearchScreen() {
     }
 
     if (resolvingTrackId === item.id) return;
+    const tapSeq = ++streamTapSeqRef.current;
     setResolvingTrackId(item.id);
 
     try {
       const streamResult = await resolveOnlineStreamUrl(item);
+      if (tapSeq !== streamTapSeqRef.current) return;
+
       const tempTrack: Track = {
         id: streamTrackId,
         user_id: 'local_guest',
@@ -318,8 +326,10 @@ export default function SearchScreen() {
         type: 'search-radio',
         name: `${item.artist || 'Artist'} Radio`,
       });
+      if (tapSeq !== streamTapSeqRef.current) return;
       usePlayerStore.getState().fetchRelatedRadioTracks(tempTrack);
     } catch (err: any) {
+      if (tapSeq !== streamTapSeqRef.current) return;
       setModalConfig({
         visible: true,
         title: 'Streaming Error',
@@ -329,7 +339,9 @@ export default function SearchScreen() {
         icon: 'alert-circle-outline',
       });
     } finally {
-      setResolvingTrackId(null);
+      if (tapSeq === streamTapSeqRef.current) {
+        setResolvingTrackId(null);
+      }
     }
   };
 

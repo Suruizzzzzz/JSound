@@ -2,7 +2,7 @@ import 'react-native-url-polyfill/auto';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Innertube } from 'youtubei.js';
 import { Track } from '@/types/music';
-import { saveTrack, getAllTracks } from '@/repositories/trackRepository';
+import { saveTrack, getAllTracks, normalizeLocalFileUri } from '@/repositories/trackRepository';
 import { getActiveUserId } from '@/lib/database';
 import { usePlayerStore } from '@/store/playerStore';
 
@@ -52,15 +52,33 @@ export const INVIDIOUS_INSTANCES = [
 let innertubeInstance: Innertube | null = null;
 let innertubeInitPromise: Promise<Innertube> | null = null;
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function getInnertube(): Promise<Innertube> {
   if (innertubeInstance) {
     return innertubeInstance;
   }
   if (!innertubeInitPromise) {
-    innertubeInitPromise = Innertube.create({
-      retrieve_player: false,
-      generate_session_locally: true,
-    })
+    innertubeInitPromise = withTimeout(
+      Innertube.create({
+        retrieve_player: false,
+        generate_session_locally: true,
+      }),
+      8000,
+      'Innertube init'
+    )
       .then((instance) => {
         innertubeInstance = instance;
         return instance;
@@ -279,7 +297,11 @@ export async function searchOnlineTracks(query: string): Promise<OnlineTrackResu
   // 1. Primary: Search directly via YouTube Innertube
   try {
     const innertube = await getInnertube();
-    const searchRes = await innertube.search(trimmed, { type: 'video' });
+    const searchRes = await withTimeout(
+      innertube.search(trimmed, { type: 'video' }),
+      7000,
+      'Innertube search'
+    );
     const rawVideos: any[] = (searchRes as any)?.videos || [];
 
     if (Array.isArray(rawVideos) && rawVideos.length > 0) {
@@ -395,7 +417,7 @@ export async function getRelatedOnlineTracks(
   if (cleanVideoId) {
     try {
       const innertube = await getInnertube();
-      const info = await innertube.getInfo(cleanVideoId);
+      const info = await withTimeout(innertube.getInfo(cleanVideoId), 6000, 'Innertube getInfo');
       const feed = (info as any)?.watch_next_feed;
       const rawItems: any[] = Array.isArray(feed)
         ? feed
@@ -478,11 +500,13 @@ export async function getRelatedOnlineTracks(
  * Strictly prioritizes audio/mp4 (.m4a / AAC) to prevent Android expo-audio from stalling at 0:00.
  */
 export async function resolveOnlineStreamUrl(
-  track: OnlineTrackResult
+  track: OnlineTrackResult,
+  options?: { verify?: boolean }
 ): Promise<ResolvedStreamResult> {
   const youtubeHeaders: Record<string, string> = {
     'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
   };
+  const shouldVerify = Boolean(options?.verify);
 
   if (track.source === 'youtube') {
     // -------------------------------------------------------------
@@ -493,7 +517,11 @@ export async function resolveOnlineStreamUrl(
 
       for (const clientName of ['ANDROID', 'IOS'] as const) {
         try {
-          const info = await innertube.getBasicInfo(track.id, { client: clientName });
+          const info = await withTimeout(
+            innertube.getBasicInfo(track.id, { client: clientName }),
+            6000,
+            `Innertube basicInfo (${clientName})`
+          );
           const formats: any[] = info.streaming_data?.adaptive_formats || [];
 
           // Strictly filter for audio-only formats, prioritizing audio/mp4 (.m4a / AAC)
@@ -526,7 +554,10 @@ export async function resolveOnlineStreamUrl(
               }
 
               if (candidateUrl) {
-                // Fast-Path: return primary candidate immediately without blocking verifyStreamUrl network roundtrip
+                if (shouldVerify) {
+                  const isPlayable = await verifyStreamUrl(candidateUrl, 3500, youtubeHeaders);
+                  if (!isPlayable) continue;
+                }
                 return { url: candidateUrl, headers: youtubeHeaders };
               }
             }
@@ -554,7 +585,10 @@ export async function resolveOnlineStreamUrl(
             }
 
             if (candidateUrl) {
-              // Fast-Path: return progressive candidate immediately
+              if (shouldVerify) {
+                const isPlayable = await verifyStreamUrl(candidateUrl, 3500, youtubeHeaders);
+                if (!isPlayable) continue;
+              }
               return { url: candidateUrl, headers: youtubeHeaders };
             }
           }
@@ -827,22 +861,6 @@ export async function downloadTrackToOfflineLibrary(
   onProgress?: (pct: number) => void,
   options?: { isPlaylistOnly?: boolean; targetTrackId?: string }
 ): Promise<Track> {
-  let streamResult: ResolvedStreamResult;
-  let ext = '.m4a';
-
-  try {
-    streamResult = await resolveOnlineStreamUrl(track);
-    if (streamResult.url.includes('.mp3') || streamResult.url.includes('audius.co')) {
-      ext = '.mp3';
-    } else {
-      ext = '.m4a';
-    }
-  } catch (err: any) {
-    throw new Error(err?.message || `Failed to resolve download stream for "${track.title}".`);
-  }
-
-  const { url: streamUrl, headers } = streamResult;
-
   const docDir = FileSystem.documentDirectory;
   if (!docDir) {
     throw new Error('Device storage documentDirectory is unavailable.');
@@ -866,17 +884,36 @@ export async function downloadTrackToOfflineLibrary(
     .trim()
     .replace(/\s+/g, '_')
     .slice(0, 30) || 'artist';
-  const fileName = `${track.source}_${track.id}_${cleanArtist}_${cleanTitle}${ext}`;
-  const fileUri = `${tracksDir}${fileName}`;
+  const baseFileName = `${track.source}_${track.id}_${cleanArtist}_${cleanTitle}`;
 
-  // Check if file already exists on device storage with valid size (> 10 KB)
-  // This allows multiple users on the same device to instantly share downloaded audio without duplicate network usage
-  const existingFileInfo = await FileSystem.getInfoAsync(fileUri);
-  let finalAudioUri = fileUri;
+  // Reuse an already-downloaded file before touching the network (supports offline retry/multi-user sharing)
+  let finalAudioUri: string | null = null;
+  for (const candidateExt of ['.m4a', '.mp3']) {
+    const candidateUri = `${tracksDir}${baseFileName}${candidateExt}`;
+    const existingFileInfo = await FileSystem.getInfoAsync(candidateUri);
+    if (existingFileInfo.exists && (existingFileInfo.size ?? 0) > 10000) {
+      finalAudioUri = normalizeLocalFileUri(candidateUri) || candidateUri;
+      onProgress?.(100);
+      break;
+    }
+  }
 
-  if (existingFileInfo.exists && (existingFileInfo.size ?? 0) > 10000) {
-    onProgress?.(100);
-  } else {
+  if (!finalAudioUri) {
+    let streamResult: ResolvedStreamResult;
+    let ext = '.m4a';
+
+    try {
+      streamResult = await resolveOnlineStreamUrl(track, { verify: true });
+      if (streamResult.url.includes('.mp3') || streamResult.url.includes('audius.co')) {
+        ext = '.mp3';
+      }
+    } catch (err: any) {
+      throw new Error(err?.message || `Failed to resolve download stream for "${track.title}".`);
+    }
+
+    const { url: streamUrl, headers } = streamResult;
+    const fileUri = `${tracksDir}${baseFileName}${ext}`;
+
     // Notify initial progress
     onProgress?.(0);
 
@@ -907,6 +944,19 @@ export async function downloadTrackToOfflineLibrary(
       if (!downloadResult || !downloadResult.uri) {
         throw new Error('Audio download failed. No local URI returned.');
       }
+      if (
+        typeof downloadResult.status === 'number' &&
+        (downloadResult.status < 200 || downloadResult.status >= 300)
+      ) {
+        try {
+          await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        } catch {
+          // ignore
+        }
+        throw new Error(
+          `Audio download failed with HTTP status ${downloadResult.status}. Please try another track.`
+        );
+      }
 
       // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
       const fileInfo = await FileSystem.getInfoAsync(fileUri);
@@ -920,7 +970,7 @@ export async function downloadTrackToOfflineLibrary(
           `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
         );
       }
-      finalAudioUri = downloadResult.uri;
+      finalAudioUri = normalizeLocalFileUri(downloadResult.uri) || downloadResult.uri;
     } catch (err: any) {
       // If cancelled or failed, ensure partial file is wiped
       try {
@@ -939,7 +989,7 @@ export async function downloadTrackToOfflineLibrary(
     onProgress?.(100);
   }
 
-  // Optional: save thumbnail locally for offline display
+  // Optional: save thumbnail locally for offline display (bounded so slow artwork never stalls SQLite save)
   let localArtworkUri: string | null = track.thumbnailUrl;
   if (track.thumbnailUrl) {
     try {
@@ -951,9 +1001,16 @@ export async function downloadTrackToOfflineLibrary(
 
       const artExt = track.thumbnailUrl.includes('.png') ? '.png' : '.jpg';
       const artFileUri = `${artworkDir}art_${track.source}_${track.id}${artExt}`;
-      const artResult = await FileSystem.downloadAsync(track.thumbnailUrl, artFileUri);
-      if (artResult?.uri) {
-        localArtworkUri = artResult.uri;
+      const artResult = await withTimeout(
+        FileSystem.downloadAsync(track.thumbnailUrl, artFileUri),
+        5000,
+        'Artwork download'
+      );
+      if (
+        artResult?.uri &&
+        (!artResult.status || (artResult.status >= 200 && artResult.status < 300))
+      ) {
+        localArtworkUri = normalizeLocalFileUri(artResult.uri) || artResult.uri;
       }
     } catch {
       // Non-fatal, use remote URL or null

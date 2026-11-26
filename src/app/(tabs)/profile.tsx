@@ -22,7 +22,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { useThemeStore } from '@/store/themeStore';
 import { usePlayerStore } from '@/store/playerStore';
-import { useAuthStore } from '@/services/authService';
+import { useAuthStore } from '@/store/authStore';
 import { getSetting, setSetting, getAllPlaylists, getDatabase } from '@/lib/database';
 import {
   runAutoDownloadSync,

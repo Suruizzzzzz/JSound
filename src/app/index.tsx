@@ -13,7 +13,7 @@ import { useRouter, useFocusEffect, useRootNavigationState } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useThemeStore } from '@/store/themeStore';
-import { useAuthStore } from '@/services/authService';
+import { useAuthStore } from '@/store/authStore';
 import { setSetting, getSetting } from '@/lib/database';
 import { createStyles } from '@/styles/welcome.styles';
 
@@ -175,9 +175,11 @@ export default function WelcomeScreen() {
 
       async function checkExistingWelcome() {
         try {
+          if (!useAuthStore.getState().isAuthHydrated) {
+            await useAuthStore.getState().initProfile();
+          }
           const seen = await getSetting('has_seen_welcome');
-          const currentUser = useAuthStore.getState().user;
-          const isGuest = useAuthStore.getState().isGuestSession;
+          const { user: currentUser, isGuestSession: isGuest } = useAuthStore.getState();
 
           if (seen === 'true' && (currentUser?.is_logged_in || isGuest) && isMounted) {
             router.replace('/(tabs)');

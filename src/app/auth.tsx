@@ -15,7 +15,7 @@ import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeStore } from '@/store/themeStore';
-import { useAuthStore } from '@/services/authService';
+import { useAuthStore } from '@/store/authStore';
 import { setSetting } from '@/lib/database';
 import { createStyles } from '@/styles/auth.styles';
 

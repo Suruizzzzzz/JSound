@@ -12,11 +12,26 @@ import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import { createStyles } from './MiniPlayer.styles';
 
+const MiniPlayerProgressBar = React.memo(function MiniPlayerProgressBar({
+  styles,
+}: {
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const position = usePlayerStore((state) => state.position);
+  const duration = usePlayerStore((state) => state.duration);
+  const progressPercent =
+    duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0;
+
+  return (
+    <View style={styles.progressBarBackground}>
+      <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+    </View>
+  );
+});
+
 export default function MiniPlayer() {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
-  const position = usePlayerStore((state) => state.position);
-  const duration = usePlayerStore((state) => state.duration);
   const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
   const playNext = usePlayerStore((state) => state.playNext);
   const setModalOpen = usePlayerStore((state) => state.setModalOpen);
@@ -31,8 +46,6 @@ export default function MiniPlayer() {
   if (!currentTrack) {
     return null;
   }
-
-  const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0;
 
   return (
     <View style={[styles.container, { bottom: tabBarHeight }]}>
@@ -96,9 +109,7 @@ export default function MiniPlayer() {
       </TouchableOpacity>
 
       {/* Slim progress bar docked at the bottom of the card */}
-      <View style={styles.progressBarBackground}>
-        <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-      </View>
+      <MiniPlayerProgressBar styles={styles} />
     </View>
   );
 }

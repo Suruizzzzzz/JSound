@@ -112,10 +112,11 @@ export default function DotMatrixVisualizer({
   const animationsRef = useRef<Animated.CompositeAnimation[]>([]);
   const lastPositionRef = useRef<number>(position);
   const positionRef = useRef<number>(position);
+  const isAnimatingRef = useRef<boolean>(isAnimating);
 
   useEffect(() => {
-    positionRef.current = position;
-  }, [position]);
+    isAnimatingRef.current = isAnimating;
+  }, [isAnimating]);
 
   // Start continuous rhythmic beat loop for a single bar
   const startBarLoop = useCallback(
@@ -185,31 +186,42 @@ export default function DotMatrixVisualizer({
     };
   }, [isAnimating, animValues, startBarLoop]);
 
-  // Real-time scrubbing response: trigger energetic ripple on seek
+  // Subscribe directly to store position jumps while animating so parent modals don't re-render on ticks
   useEffect(() => {
     if (!isAnimating) return;
 
-    const posDelta = Math.abs(position - lastPositionRef.current);
-    lastPositionRef.current = position;
+    const initialPos = usePlayerStore.getState().position;
+    positionRef.current = initialPos;
+    lastPositionRef.current = initialPos;
 
-    if (posDelta > 0.8) {
-      animValues.forEach((val, barIdx) => {
-        const cfg = getBarConfig(barIdx, position);
-        Animated.sequence([
-          Animated.timing(val, {
-            toValue: cfg.peak1,
-            duration: 80,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-        ]).start(() => {
-          if (isAnimating) {
-            startBarLoop(barIdx);
-          }
+    const unsubscribe = usePlayerStore.subscribe((state, prevState) => {
+      if (state.position === prevState.position) return;
+      positionRef.current = state.position;
+
+      const posDelta = Math.abs(state.position - lastPositionRef.current);
+      lastPositionRef.current = state.position;
+
+      if (!state.isSeeking && posDelta > 0.8) {
+        animValues.forEach((val, barIdx) => {
+          const cfg = getBarConfig(barIdx, state.position);
+          Animated.sequence([
+            Animated.timing(val, {
+              toValue: cfg.peak1,
+              duration: 80,
+              easing: Easing.out(Easing.quad),
+              useNativeDriver: true,
+            }),
+          ]).start(() => {
+            if (isAnimatingRef.current) {
+              startBarLoop(barIdx);
+            }
+          });
         });
-      });
-    }
-  }, [position, isAnimating, animValues, startBarLoop]);
+      }
+    });
+
+    return unsubscribe;
+  }, [isAnimating, animValues, startBarLoop]);
 
   return (
     <View style={styles.stage}>

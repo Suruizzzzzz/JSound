@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Track, Playlist } from '@/types/music';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
+let initDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let activeUserIdGetter: (() => string) | null = null;
 
 export function registerActiveUserIdGetter(getter: () => string) {
@@ -28,7 +29,12 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 }
 
 export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
-  const db = await getDatabase();
+  if (initDbPromise) {
+    return initDbPromise;
+  }
+
+  initDbPromise = (async () => {
+    const db = await getDatabase();
 
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -323,26 +329,28 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     // Ignore if tables not yet populated
   }
 
-  // Safe cleanup: ensure tracks that exist ONLY inside imported playlists (is_imported = 1)
+  // Safe cleanup: ensure un-downloaded tracks that exist ONLY inside imported playlists (is_imported = 1)
   // and not in any personal/non-imported playlist have is_playlist_only = 1 so they do not leak into All Songs.
+  // Never hide tracks that already have a downloaded local audio file on disk.
   try {
     await db.execAsync(`
       UPDATE tracks
       SET is_playlist_only = 1
-      WHERE id IN (
-        SELECT pt.track_id
-        FROM playlist_tracks pt
-        JOIN playlists p ON pt.playlist_id = p.id
-        WHERE p.is_imported = 1
-          AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
-      )
-      AND id NOT IN (
-        SELECT pt.track_id
-        FROM playlist_tracks pt
-        JOIN playlists p ON pt.playlist_id = p.id
-        WHERE COALESCE(p.is_imported, 0) = 0
-          AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
-      );
+      WHERE (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')
+        AND id IN (
+          SELECT pt.track_id
+          FROM playlist_tracks pt
+          JOIN playlists p ON pt.playlist_id = p.id
+          WHERE p.is_imported = 1
+            AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
+        )
+        AND id NOT IN (
+          SELECT pt.track_id
+          FROM playlist_tracks pt
+          JOIN playlists p ON pt.playlist_id = p.id
+          WHERE COALESCE(p.is_imported, 0) = 0
+            AND (p.user_id = tracks.user_id OR tracks.user_id = 'local_guest')
+        );
     `);
   } catch (cleanErr) {
     console.warn('Imported playlist tracks cleanup warning:', cleanErr);
@@ -426,7 +434,13 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     console.warn('[Database] Auto-claim guest library startup warning:', claimErr);
   }
 
-  return db;
+    return db;
+  })().catch((err) => {
+    initDbPromise = null;
+    throw err;
+  });
+
+  return initDbPromise;
 }
 
 export async function getSetting(key: string, defaultValue: string | null = null): Promise<string | null> {
@@ -1224,6 +1238,29 @@ export async function claimGuestLibrary(targetUserId: string): Promise<{ tracksC
     return { tracksCount: 0, playlistsCount: 0 };
   }
 
+  // Verify local audio existence before entering the SQLite transaction to avoid lock contention
+  const attachableAudioSet = new Set<string>();
+  for (const t of guestTracks) {
+    if (!t.local_audio_uri) continue;
+    let shouldAttachAudio = true;
+    const normalizedUri = t.local_audio_uri.startsWith('/')
+      ? `file://${t.local_audio_uri}`
+      : t.local_audio_uri;
+    if (normalizedUri.startsWith('file://')) {
+      try {
+        const info = await FileSystem.getInfoAsync(normalizedUri);
+        if (info.exists === false) {
+          shouldAttachAudio = false;
+        }
+      } catch {
+        // Keep existing URI if file check fails transiently
+      }
+    }
+    if (shouldAttachAudio) {
+      attachableAudioSet.add(t.id);
+    }
+  }
+
   await db.withTransactionAsync(async () => {
     // 1. Reassign guest tracks to target user (INSERT OR IGNORE to not overwrite existing account tracks)
     for (const t of guestTracks) {
@@ -1249,27 +1286,14 @@ export async function claimGuestLibrary(targetUserId: string): Promise<{ tracksC
       );
 
       // If the target user already had this track without local audio, attach the guest's local file
-      if (t.local_audio_uri) {
-        let shouldAttachAudio = true;
-        if (t.local_audio_uri.startsWith('file://')) {
-          try {
-            const info = await FileSystem.getInfoAsync(t.local_audio_uri);
-            if (info.exists === false) {
-              shouldAttachAudio = false;
-            }
-          } catch {
-            // Keep existing URI if file check fails transiently
-          }
-        }
-        if (shouldAttachAudio) {
-          await db.runAsync(
-            `UPDATE tracks
-             SET local_audio_uri = ?,
-                 local_artwork_uri = COALESCE(NULLIF(local_artwork_uri, ''), ?)
-             WHERE user_id = ? AND id = ? AND (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')`,
-            [t.local_audio_uri, t.local_artwork_uri || null, targetUserId, t.id]
-          );
-        }
+      if (t.local_audio_uri && attachableAudioSet.has(t.id)) {
+        await db.runAsync(
+          `UPDATE tracks
+           SET local_audio_uri = ?,
+               local_artwork_uri = COALESCE(NULLIF(local_artwork_uri, ''), ?)
+           WHERE user_id = ? AND id = ? AND (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')`,
+          [t.local_audio_uri, t.local_artwork_uri || null, targetUserId, t.id]
+        );
       }
 
       tracksCount++;

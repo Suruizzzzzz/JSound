@@ -8,9 +8,9 @@ import {
   AudioMetadata,
   AudioLockScreenOptions,
 } from 'expo-audio';
-import * as FileSystem from 'expo-file-system/legacy';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { EventSubscription } from 'expo';
+import { resolveLocalTrackUri } from '@/repositories/trackRepository';
 
 export { AudioPlayer, AudioStatus, AudioSource, AudioMetadata, AudioLockScreenOptions };
 
@@ -21,6 +21,8 @@ let isAudioModeConfigured = false;
 let shouldAutoPlay = true;
 let currentTrackMetadata: AudioMetadata | undefined = undefined;
 let hasSyncedLockScreenForCurrentTrack = false;
+let isLockScreenActiveOnPlayer = false;
+let loadRequestId = 0;
 
 // Detect Expo Go client vs compiled standalone / development build
 const isExpoGo =
@@ -31,9 +33,113 @@ const isExpoGo =
   Boolean((Constants as unknown as { manifest?: { developer?: boolean } })?.manifest?.developer);
 
 const DEFAULT_LOCK_SCREEN_OPTIONS: AudioLockScreenOptions = {
-  showSeekForward: false,
-  showSeekBackward: false,
+  showSeekForward: true,
+  showSeekBackward: true,
+  seekForwardIntervalSeconds: 10,
+  seekBackwardIntervalSeconds: 10,
 };
+
+function sanitizeMetadataArtworkUrl(artworkUrl?: string): string | undefined {
+  if (!artworkUrl) return undefined;
+  const trimmed = artworkUrl.trim();
+  if (!trimmed) return undefined;
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('file://')
+  ) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('file:/')) {
+    return `file:///${trimmed.slice(6).replace(/^\/+/, '')}`;
+  }
+  if (trimmed.startsWith('/')) {
+    return `file://${trimmed}`;
+  }
+  return undefined;
+}
+
+function normalizeMetadata(metadata?: AudioMetadata): AudioMetadata | undefined {
+  if (!metadata) return undefined;
+  return {
+    ...metadata,
+    artworkUrl: sanitizeMetadataArtworkUrl(metadata.artworkUrl),
+  };
+}
+
+function syncLockScreenControls(player: AudioPlayer, metadata?: AudioMetadata): void {
+  if (isExpoGo || !metadata) return;
+  try {
+    if (!isLockScreenActiveOnPlayer && typeof player.setActiveForLockScreen === 'function') {
+      player.setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+      isLockScreenActiveOnPlayer = true;
+    } else if (
+      typeof (player as unknown as { updateLockScreenMetadata?: (meta: AudioMetadata) => void })
+        .updateLockScreenMetadata === 'function'
+    ) {
+      (
+        player as unknown as { updateLockScreenMetadata: (meta: AudioMetadata) => void }
+      ).updateLockScreenMetadata(metadata);
+    } else if (typeof player.setActiveForLockScreen === 'function') {
+      player.setActiveForLockScreen(true, metadata, DEFAULT_LOCK_SCREEN_OPTIONS);
+      isLockScreenActiveOnPlayer = true;
+    }
+  } catch (lockErr) {
+    console.warn('[AudioService] Failed to update lock screen controls:', lockErr);
+  }
+}
+
+function teardownPlayerInstance(): void {
+  isLockScreenActiveOnPlayer = false;
+  hasSyncedLockScreenForCurrentTrack = false;
+
+  if (statusSubscription) {
+    try {
+      statusSubscription.remove();
+    } catch {
+      // ignore
+    }
+    statusSubscription = null;
+  }
+
+  if (playerInstance) {
+    const playerToRelease = playerInstance;
+    playerInstance = null;
+
+    try {
+      playerToRelease.pause();
+    } catch {
+      // ignore
+    }
+
+    if (!isExpoGo) {
+      try {
+        if (typeof playerToRelease.clearLockScreenControls === 'function') {
+          playerToRelease.clearLockScreenControls();
+        } else if (typeof playerToRelease.setActiveForLockScreen === 'function') {
+          playerToRelease.setActiveForLockScreen(false);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      if (typeof playerToRelease.remove === 'function') {
+        playerToRelease.remove();
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof (playerToRelease as unknown as { release?: () => void }).release === 'function') {
+        (playerToRelease as unknown as { release: () => void }).release();
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
 
 function attachStatusListener(player: AudioPlayer) {
   if (statusSubscription) {
@@ -46,6 +152,8 @@ function attachStatusListener(player: AudioPlayer) {
   }
 
   statusSubscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+    if (player !== playerInstance) return;
+
     if ('error' in status && (status as unknown as { error?: unknown }).error) {
       console.error('[AudioService] Playback error:', (status as unknown as { error: unknown }).error);
     }
@@ -72,19 +180,7 @@ function attachStatusListener(player: AudioPlayer) {
       currentTrackMetadata
     ) {
       hasSyncedLockScreenForCurrentTrack = true;
-      try {
-        if (typeof player.setActiveForLockScreen === 'function') {
-          player.setActiveForLockScreen(
-            true,
-            currentTrackMetadata,
-            DEFAULT_LOCK_SCREEN_OPTIONS
-          );
-        } else if (typeof (player as unknown as { updateLockScreenMetadata?: (meta: AudioMetadata) => void }).updateLockScreenMetadata === 'function') {
-          (player as unknown as { updateLockScreenMetadata: (meta: AudioMetadata) => void }).updateLockScreenMetadata(currentTrackMetadata);
-        }
-      } catch (lockErr) {
-        console.warn('[AudioService] Failed to sync lock screen metadata on load:', lockErr);
-      }
+      syncLockScreenControls(player, currentTrackMetadata);
     }
 
     currentStatusCallback?.(status);
@@ -119,42 +215,46 @@ export async function loadAndPlayAudio(
   onStatusUpdate: (status: AudioStatus) => void,
   headers?: Record<string, string>,
   metadata?: AudioMetadata
-): Promise<AudioPlayer> {
+): Promise<AudioPlayer | null> {
+  const requestId = ++loadRequestId;
   await ensureAudioMode();
-  currentStatusCallback = onStatusUpdate;
-  shouldAutoPlay = true;
-  currentTrackMetadata = metadata;
-  hasSyncedLockScreenForCurrentTrack = false;
+  if (requestId !== loadRequestId) return null;
 
-  const source: AudioSource =
-    typeof uriOrSource === 'string'
-      ? headers
-        ? { uri: uriOrSource, headers }
-        : { uri: uriOrSource }
-      : uriOrSource;
-
-  const uri =
+  const rawUri =
     typeof uriOrSource === 'string'
       ? uriOrSource
       : typeof uriOrSource === 'object' && uriOrSource !== null && 'uri' in uriOrSource
       ? (uriOrSource as { uri?: string }).uri || ''
       : '';
 
-  console.log('[AudioService] Loading URI:', uri);
+  let effectiveUri = rawUri;
+  const isRemoteUri =
+    rawUri.startsWith('http://') || rawUri.startsWith('https://');
 
-  // If local file, verify existence and byte size
-  if (uri.startsWith('file://')) {
-    try {
-      const info = await FileSystem.getInfoAsync(uri);
-      console.log('[AudioService] Local file info:', {
-        exists: info.exists,
-        size: info.exists ? (info as { size?: number }).size : 0,
-        uri: info.uri,
-      });
-    } catch (e) {
-      console.warn('[AudioService] Could not inspect local file info:', e);
+  if (!isRemoteUri && rawUri) {
+    const resolvedLocal = await resolveLocalTrackUri(rawUri);
+    if (requestId !== loadRequestId) return null;
+    if (resolvedLocal.exists && resolvedLocal.uri) {
+      effectiveUri = resolvedLocal.uri;
+    } else {
+      throw new Error('Local audio file is missing or corrupted on device storage.');
     }
   }
+
+  // Assign active callback/metadata only right before touching native player (never wiped by teardown)
+  currentStatusCallback = onStatusUpdate;
+  shouldAutoPlay = true;
+  currentTrackMetadata = normalizeMetadata(metadata);
+  hasSyncedLockScreenForCurrentTrack = false;
+
+  const source: AudioSource =
+    typeof uriOrSource === 'string'
+      ? headers
+        ? { uri: effectiveUri, headers }
+        : { uri: effectiveUri }
+      : typeof uriOrSource === 'object' && uriOrSource !== null
+      ? { ...(uriOrSource as Record<string, unknown>), uri: effectiveUri }
+      : uriOrSource;
 
   try {
     // 1. Re-use existing player with .replace()
@@ -164,30 +264,21 @@ export async function loadAndPlayAudio(
         hasSyncedLockScreenForCurrentTrack = false;
         playerInstance.replace(source);
 
-        // Update lock-screen in standalone builds
-        if (!isExpoGo && currentTrackMetadata) {
-          try {
-            if (typeof playerInstance.setActiveForLockScreen === 'function') {
-              playerInstance.setActiveForLockScreen(
-                true,
-                currentTrackMetadata,
-                DEFAULT_LOCK_SCREEN_OPTIONS
-              );
-            } else if (typeof (playerInstance as unknown as { updateLockScreenMetadata?: (meta: AudioMetadata) => void }).updateLockScreenMetadata === 'function') {
-              (playerInstance as unknown as { updateLockScreenMetadata: (meta: AudioMetadata) => void }).updateLockScreenMetadata(currentTrackMetadata);
-            }
-          } catch {
-            // Ignore in Expo Go or transition states
-          }
-        }
+        syncLockScreenControls(playerInstance, currentTrackMetadata);
 
         if (playerInstance.isLoaded) {
           playerInstance.play();
           shouldAutoPlay = false;
         } else {
+          const activePlayer = playerInstance;
           setTimeout(() => {
-            if (playerInstance?.isLoaded && shouldAutoPlay) {
-              playerInstance.play();
+            if (
+              requestId === loadRequestId &&
+              playerInstance === activePlayer &&
+              activePlayer.isLoaded &&
+              shouldAutoPlay
+            ) {
+              activePlayer.play();
               shouldAutoPlay = false;
             }
           }, 60);
@@ -196,34 +287,35 @@ export async function loadAndPlayAudio(
         return playerInstance;
       } catch (replaceErr) {
         console.warn('[AudioService] Player replace failed, recreating player:', replaceErr);
-        await stopAndUnloadAudio();
+        teardownPlayerInstance();
       }
     }
 
-    // 2. Fresh player instantiation
-    await stopAndUnloadAudio();
+    if (requestId !== loadRequestId) return null;
+
+    // 2. Fresh player instantiation (teardown old native player WITHOUT wiping current callbacks/metadata)
+    teardownPlayerInstance();
 
     const player = createAudioPlayer(source, {
       updateInterval: 250,
       keepAudioSessionActive: true,
     });
-    playerInstance = player;
-
-    attachStatusListener(player);
-
-    if (!isExpoGo && currentTrackMetadata) {
+    if (requestId !== loadRequestId) {
       try {
-        if (typeof player.setActiveForLockScreen === 'function') {
-          player.setActiveForLockScreen(
-            true,
-            currentTrackMetadata,
-            DEFAULT_LOCK_SCREEN_OPTIONS
-          );
+        player.pause();
+        player.remove();
+        if (typeof (player as unknown as { release?: () => void }).release === 'function') {
+          (player as unknown as { release: () => void }).release();
         }
-      } catch (lockErr) {
-        console.warn('[AudioService] Failed to set initial lock screen controls:', lockErr);
+      } catch {
+        // ignore
       }
+      return null;
     }
+
+    playerInstance = player;
+    attachStatusListener(player);
+    syncLockScreenControls(player, currentTrackMetadata);
 
     if (player.isLoaded) {
       player.play();
@@ -271,69 +363,18 @@ export async function seekAudio(positionSeconds: number): Promise<void> {
 }
 
 export async function stopAndUnloadAudio(): Promise<void> {
+  loadRequestId += 1;
   shouldAutoPlay = false;
   currentStatusCallback = null;
   currentTrackMetadata = undefined;
-
-  if (statusSubscription) {
-    try {
-      statusSubscription.remove();
-    } catch {
-      // ignore
-    }
-    statusSubscription = null;
-  }
-
-  if (playerInstance) {
-    const playerToRelease = playerInstance;
-    playerInstance = null;
-
-    try {
-      playerToRelease.pause();
-    } catch {
-      // ignore
-    }
-
-    if (!isExpoGo) {
-      try {
-        if (typeof playerToRelease.clearLockScreenControls === 'function') {
-          playerToRelease.clearLockScreenControls();
-        } else if (typeof playerToRelease.setActiveForLockScreen === 'function') {
-          playerToRelease.setActiveForLockScreen(false);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    try {
-      if (typeof playerToRelease.remove === 'function') {
-        playerToRelease.remove();
-      } else if (typeof (playerToRelease as unknown as { release?: () => void }).release === 'function') {
-        (playerToRelease as unknown as { release: () => void }).release();
-      }
-    } catch {
-      // ignore
-    }
-  }
+  teardownPlayerInstance();
 }
 
 export function updateAudioMetadata(metadata: AudioMetadata): void {
-  currentTrackMetadata = metadata;
-  if (isExpoGo || !playerInstance) return;
-  try {
-    if (typeof playerInstance.setActiveForLockScreen === 'function') {
-      playerInstance.setActiveForLockScreen(
-        true,
-        metadata,
-        DEFAULT_LOCK_SCREEN_OPTIONS
-      );
-    } else if (typeof (playerInstance as unknown as { updateLockScreenMetadata?: (meta: AudioMetadata) => void }).updateLockScreenMetadata === 'function') {
-      (playerInstance as unknown as { updateLockScreenMetadata: (meta: AudioMetadata) => void }).updateLockScreenMetadata(metadata);
-    }
-  } catch {
-    // Suppress in Expo Go or intermediate transitions
-  }
+  const normalized = normalizeMetadata(metadata);
+  currentTrackMetadata = normalized;
+  if (isExpoGo || !playerInstance || !normalized) return;
+  syncLockScreenControls(playerInstance, normalized);
 }
 
 export function getCurrentPlayer(): AudioPlayer | null {

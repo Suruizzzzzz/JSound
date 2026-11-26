@@ -2,7 +2,7 @@ import { makeRedirectUri } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as FileSystem from 'expo-file-system/legacy';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { supabase } from './supabase';
+import { supabase, clearCachedSupabaseSessionToken } from './supabase';
 import type { Session, User } from '@supabase/supabase-js';
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -248,12 +248,16 @@ export const authService = {
   },
 
   /**
-   * Terminate current Supabase session
+   * Terminate current Supabase session without hanging offline.
    */
   async signOut() {
-    const { error } = await supabase.auth.signOut({ scope: 'local' });
-    if (error) {
-      throw error;
+    try {
+      await Promise.race([
+        supabase.auth.signOut({ scope: 'local' }),
+        new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+      ]);
+    } finally {
+      await clearCachedSupabaseSessionToken();
     }
   },
 

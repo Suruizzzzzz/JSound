@@ -1,6 +1,11 @@
 import { create } from 'zustand';
-import { getSetting, setSetting, registerActiveUserIdGetter, claimGuestLibrary } from '@/lib/database';
-import { supabase, ExpoSecureStoreAdapter, getCachedSupabaseSessionUserId } from '@/services/supabase';
+import { initDatabase, getSetting, setSetting, registerActiveUserIdGetter, claimGuestLibrary } from '@/lib/database';
+import {
+  supabase,
+  ExpoSecureStoreAdapter,
+  getCachedSupabaseSessionUserId,
+  clearCachedSupabaseSessionToken,
+} from '@/services/supabase';
 import { authService } from '@/services/authService';
 import { syncPlaylistsToCloud as syncWithCloud } from '@/services/playlistSyncService';
 import type { User } from '@supabase/supabase-js';
@@ -54,6 +59,10 @@ export interface AuthState {
 let lastKnownUserId: string | null = null;
 let explicitSignOutInProgress = false;
 let initProfilePromise: Promise<void> | null = null;
+
+export function isExplicitSignOutInProgress(): boolean {
+  return explicitSignOutInProgress;
+}
 
 async function persistLastSignedInUser(profile: UserProfile): Promise<void> {
   if (!profile.id || profile.id === 'local_guest') return;
@@ -242,7 +251,7 @@ let authListenerSubscribed = false;
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: GUEST_USER,
-  isGuestSession: true, // Offline Guest Mode enabled by default
+  isGuestSession: false,
   isAuthHydrated: false,
   isSyncing: false,
 
@@ -257,11 +266,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     initProfilePromise = (async () => {
       try {
+        await initDatabase();
+
         // 1. Subscribe to Supabase auth state change events once
         if (!authListenerSubscribed) {
           authListenerSubscribed = true;
           supabase.auth.onAuthStateChange(async (event, session) => {
             if (session?.user) {
+              if (explicitSignOutInProgress) return;
               const sbUser = session.user;
               await applyAuthenticatedUser(sbUser, set, { sync_status: 'synced' });
               refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
@@ -280,15 +292,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               }
               const savedName = await getSetting('profile_display_name', 'JStream Listener');
               const savedAvatar = await getSetting('profile_avatar_uri', null);
-              set({
+              set((state) => ({
                 user: {
                   ...GUEST_USER,
                   name: savedName || GUEST_USER.name,
                   avatar_url: savedAvatar || null,
                 },
-                isGuestSession: false,
+                isGuestSession: explicitSignOutInProgress ? false : state.isGuestSession,
                 isAuthHydrated: true,
-              });
+              }));
             }
           });
         }
@@ -302,8 +314,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           }
         }
 
-        const savedLocalName = await getSetting('profile_display_name', null);
-        const savedLocalAvatar = await getSetting('profile_avatar_uri', null);
+        const [savedLocalName, savedLocalAvatar, hasSeenWelcome] = await Promise.all([
+          getSetting('profile_display_name', null),
+          getSetting('profile_avatar_uri', null),
+          getSetting('has_seen_welcome', 'false'),
+        ]);
 
         if (hydratedUserId && hydratedUserId !== 'local_guest') {
           lastKnownUserId = hydratedUserId;
@@ -333,40 +348,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
           // Ensure any leftover local_guest rows are safely claimed into this account offline
           await claimGuestLibrary(hydratedUserId).catch(() => {});
+        } else {
+          // Local guest state (preserve guest session if onboarding was already completed)
+          set((state) => ({
+            user: {
+              ...GUEST_USER,
+              name: savedLocalName || 'JStream Listener',
+              avatar_url: savedLocalAvatar || null,
+            },
+            isGuestSession: state.isGuestSession || hasSeenWelcome === 'true',
+            isAuthHydrated: true,
+          }));
         }
 
-        // 3. Check persisted Supabase session (bounded timeout so expired token refresh never blocks offline boot)
-        const session = await Promise.race([
+        // 3. Reconcile persisted Supabase session in the background (never block offline boot)
+        Promise.race([
           authService.getSession().catch(() => null),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
-        ]);
-
-        if (session?.user) {
-          const sbUser = session.user;
-          await applyAuthenticatedUser(sbUser, set, {
-            sync_status: 'synced',
-            last_synced_at: null,
-          });
-          // Refresh remote profile & cloud sync in background without blocking offline boot
-          refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
-          handleUserLoginTransition(sbUser.id).catch(() => {});
-          return;
-        }
-
-        // 4. If cached user was hydrated above, keep them signed in offline!
-        if (hydratedUserId && hydratedUserId !== 'local_guest') {
-          return;
-        }
-
-        // 5. No cached user & no session: true local_guest mode
-        set((state) => ({
-          user: {
-            ...state.user,
-            name: savedLocalName || 'JStream Listener',
-            avatar_url: savedLocalAvatar || null,
-          },
-          isAuthHydrated: true,
-        }));
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ])
+          .then(async (session) => {
+            if (explicitSignOutInProgress || !session?.user) return;
+            const sbUser = session.user;
+            await applyAuthenticatedUser(sbUser, set, {
+              sync_status: 'synced',
+              last_synced_at: null,
+            });
+            refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
+            handleUserLoginTransition(sbUser.id).catch(() => {});
+          })
+          .catch(() => {});
       } catch (e) {
         console.warn('Failed to load profile settings:', e);
         set({ isAuthHydrated: true });
@@ -641,6 +651,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     explicitSignOutInProgress = true;
     try {
       await clearLastSignedInUser();
+      await clearCachedSupabaseSessionToken();
+      await setSetting('has_seen_welcome', 'false').catch(() => {});
 
       try {
         await authService.signOut();
@@ -649,31 +661,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       try {
-        // 1. Stop and release any active audio playback
-        const { stopAndUnloadAudio } = await import('@/services/audioService');
-        await stopAndUnloadAudio();
-      } catch (audioErr) {
-        console.warn('Error stopping audio on signOut:', audioErr);
-      }
-
-      try {
-        // 2. Clear in-memory library & playback queue
+        // Stop native audio, clear timers/session IDs, and wipe in-memory playback/library state
         const { usePlayerStore } = await import('@/store/playerStore');
-        usePlayerStore.setState({
-          currentTrack: null,
-          queue: [],
-          tracks: [],
-          isPlaying: false,
-          position: 0,
-          duration: 0,
-          playbackContext: null,
-        });
+        const playerState = usePlayerStore.getState();
+        if (typeof playerState.resetPlaybackOnLogout === 'function') {
+          await playerState.resetPlaybackOnLogout();
+        } else {
+          const { stopAndUnloadAudio } = await import('@/services/audioService');
+          await stopAndUnloadAudio();
+          usePlayerStore.setState({
+            currentTrack: null,
+            queue: [],
+            tracks: [],
+            isPlaying: false,
+            position: 0,
+            duration: 0,
+            playbackContext: null,
+          });
+        }
       } catch (storeErr) {
         console.warn('Error resetting player store on signOut:', storeErr);
       }
 
-      const savedName = await getSetting('profile_display_name', 'JStream Listener');
-      const savedAvatar = await getSetting('profile_avatar_uri', null);
+      const savedName = await getSetting('profile_display_name', 'JStream Listener').catch(() => 'JStream Listener');
+      const savedAvatar = await getSetting('profile_avatar_uri', null).catch(() => null);
 
       set({
         user: {

@@ -1,15 +1,13 @@
 import ConfirmModal from "@/components/ConfirmModal";
-import { setSetting } from "@/lib/database";
 import { clearAllTracks as clearDbTracks } from "@/repositories/trackRepository";
-import { useAuthStore } from "@/services/authService";
+import { useAuthStore } from "@/store/authStore";
 import { pickAndImportAudioFiles } from "@/services/localScannerService";
 import { usePlayerStore } from "@/store/playerStore";
 import { useThemeStore } from "@/store/themeStore";
 import { useGuideStore } from "@/store/guideStore";
 import { createStyles } from "@/styles/settings.styles";
 import { Ionicons } from "@expo/vector-icons";
-import { CommonActions } from "@react-navigation/native";
-import { useNavigation, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Animated,
@@ -24,7 +22,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const setThemeMode = useThemeStore((state) => state.setThemeMode);
@@ -110,17 +107,14 @@ export default function SettingsScreen() {
   const handleConfirmLogout = async () => {
     setShowLogoutModal(false);
     try {
-      await setSetting('has_seen_welcome', 'false');
-      useAuthStore.getState().setGuestSession(false);
       await signOut();
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'index' }],
-        })
-      );
     } catch (e) {
       console.warn("Error during logout:", e);
+    } finally {
+      if (router.canDismiss()) {
+        router.dismissAll();
+      }
+      router.replace('/');
     }
   };
 

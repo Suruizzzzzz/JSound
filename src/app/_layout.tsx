@@ -12,13 +12,17 @@ import { getAllTracks } from '@/repositories/trackRepository';
 import { supabase } from '@/services/supabase';
 import { usePlayerStore } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore, isExplicitSignOutInProgress } from '@/store/authStore';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const router = useRouter();
   const pathname = usePathname();
+  const pathnameRef = React.useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
   const setTracks = usePlayerStore((state) => state.setTracks);
   const mode = useThemeStore((state) => state.mode);
   const theme = useThemeStore((state) => state.theme);
@@ -28,8 +32,10 @@ export default function RootLayout() {
 
   // Auto-redirect to /(tabs) when authenticated if currently on welcome or auth screens
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user && (pathname === '/auth' || pathname === '/' || pathname === '/index')) {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || isExplicitSignOutInProgress()) return;
+      const currentPath = pathnameRef.current;
+      if (session?.user && (currentPath === '/auth' || currentPath === '/' || currentPath === '/index')) {
         setSetting('has_seen_welcome', 'true').catch(() => {});
         router.replace('/(tabs)');
       }
@@ -38,7 +44,7 @@ export default function RootLayout() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [pathname, router]);
+  }, [router]);
 
   useEffect(() => {
     let isMounted = true;

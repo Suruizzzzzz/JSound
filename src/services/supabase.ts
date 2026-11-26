@@ -110,6 +110,15 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
   },
 });
 
+export function getSupabaseAuthStorageKey(): string | null {
+  try {
+    const host = new URL(supabaseUrl).hostname.split('.')[0];
+    return host ? `sb-${host}-auth-token` : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reads the persisted Supabase session JSON directly from local storage without
  * triggering a network token refresh, returning the cached user id if available.
@@ -117,15 +126,31 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
 export async function getCachedSupabaseSessionUserId(): Promise<string | null> {
   if (isServer) return null;
   try {
-    const host = new URL(supabaseUrl).hostname.split('.')[0];
-    if (!host) return null;
-    const raw = await ExpoSecureStoreAdapter.getItem(`sb-${host}-auth-token`);
+    const storageKey = getSupabaseAuthStorageKey();
+    if (!storageKey) return null;
+    const raw = await ExpoSecureStoreAdapter.getItem(storageKey);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     const userId = parsed?.user?.id || parsed?.currentSession?.user?.id;
     return typeof userId === 'string' && userId.length > 0 ? userId : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Removes the cached Supabase session token directly from local storage so
+ * offline sign-out always clears local credentials immediately.
+ */
+export async function clearCachedSupabaseSessionToken(): Promise<void> {
+  if (isServer) return;
+  try {
+    const storageKey = getSupabaseAuthStorageKey();
+    if (storageKey) {
+      await ExpoSecureStoreAdapter.removeItem(storageKey);
+    }
+  } catch {
+    // non-fatal
   }
 }
 

@@ -29,6 +29,76 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+interface NowPlayingProgressBarProps {
+  styles: ReturnType<typeof createStyles>;
+  primaryColor: string;
+  borderColor: string;
+}
+
+const NowPlayingProgressBar = React.memo(function NowPlayingProgressBar({
+  styles,
+  primaryColor,
+  borderColor,
+}: NowPlayingProgressBarProps) {
+  const position = usePlayerStore((state) => state.position);
+  const duration = usePlayerStore((state) => state.duration);
+  const seekTo = usePlayerStore((state) => state.seekTo);
+  const setStoreIsSeeking = usePlayerStore((state) => state.setIsSeeking);
+
+  const [isLocalSeeking, setIsLocalSeeking] = useState(false);
+  const [dragStartValue, setDragStartValue] = useState(0);
+  const [dragDisplayValue, setDragDisplayValue] = useState(0);
+
+  React.useEffect(() => {
+    return () => {
+      setStoreIsSeeking(false);
+    };
+  }, [setStoreIsSeeking]);
+
+  // Keep Slider.value frozen during active drag per @react-native-community/slider contract
+  const sliderValue = isLocalSeeking ? dragStartValue : position;
+  const displayedTime = isLocalSeeking ? dragDisplayValue : position;
+  const maxSliderValue = duration > 0 ? duration : 1;
+
+  return (
+    <View style={styles.progressSection}>
+      <Slider
+        style={styles.slider}
+        minimumValue={0}
+        maximumValue={maxSliderValue}
+        value={sliderValue}
+        minimumTrackTintColor={primaryColor}
+        maximumTrackTintColor={borderColor}
+        thumbTintColor={primaryColor}
+        onSlidingStart={(val) => {
+          setStoreIsSeeking(true);
+          setIsLocalSeeking(true);
+          setDragStartValue(val);
+          setDragDisplayValue(val);
+        }}
+        onValueChange={(val) => {
+          setDragDisplayValue(val);
+        }}
+        onSlidingComplete={async (val) => {
+          setDragDisplayValue(val);
+          setDragStartValue(val);
+          try {
+            await seekTo(val);
+          } finally {
+            setIsLocalSeeking(false);
+            setStoreIsSeeking(false);
+          }
+        }}
+      />
+
+      <View style={styles.timeRow}>
+        <Text style={styles.timeText}>{formatTime(displayedTime)}</Text>
+        <Text style={styles.timeText}>{formatTime(duration)}</Text>
+      </View>
+    </View>
+  );
+});
+
 export default function NowPlayingModal() {
   const isModalOpen = usePlayerStore((state) => state.isModalOpen);
   const setModalOpen = usePlayerStore((state) => state.setModalOpen);
@@ -36,15 +106,12 @@ export default function NowPlayingModal() {
   const playbackContext = usePlayerStore((state) => state.playbackContext);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const isBuffering = usePlayerStore((state) => state.isBuffering);
-  const position = usePlayerStore((state) => state.position);
-  const duration = usePlayerStore((state) => state.duration);
   const isShuffle = usePlayerStore((state) => state.isShuffle);
   const repeatMode = usePlayerStore((state) => state.repeatMode);
 
   const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
   const playNext = usePlayerStore((state) => state.playNext);
   const playPrevious = usePlayerStore((state) => state.playPrevious);
-  const seekTo = usePlayerStore((state) => state.seekTo);
   const toggleShuffle = usePlayerStore((state) => state.toggleShuffle);
   const cycleRepeatMode = usePlayerStore((state) => state.cycleRepeatMode);
   const updateCurrentOrLibraryTrackArtwork = usePlayerStore(
@@ -66,10 +133,6 @@ export default function NowPlayingModal() {
         : require('@/assets/images/logo-light.png'),
     [mode]
   );
-
-  // Local drag state for smooth slider dragging
-  const [isSeeking, setIsSeeking] = useState(false);
-  const [dragPosition, setDragPosition] = useState(0);
 
   // Track options modal state (•••)
   const [showTrackMenuModal, setShowTrackMenuModal] = useState(false);
@@ -186,9 +249,6 @@ export default function NowPlayingModal() {
     return null;
   }
 
-  const effectivePosition = isSeeking ? dragPosition : position;
-  const maxSliderValue = duration > 0 ? duration : 1;
-
   const isPlaylist = playbackContext?.type === 'playlist' && Boolean(playbackContext.name);
   const isRadio = playbackContext?.type === 'search-radio';
   const headerSuperText = isRadio
@@ -265,7 +325,6 @@ export default function NowPlayingModal() {
                 isPlaying={isPlaying}
                 isBuffering={isBuffering}
                 isVisible={isModalOpen}
-                position={effectivePosition}
               />
             )}
           </TouchableOpacity>
@@ -283,38 +342,13 @@ export default function NowPlayingModal() {
           </View>
         </View>
 
-        {/* Seek Slider and Timers */}
-        <View style={styles.progressSection}>
-          <Slider
-            style={styles.slider}
-            minimumValue={0}
-            maximumValue={maxSliderValue}
-            value={effectivePosition}
-            minimumTrackTintColor={theme.primary}
-            maximumTrackTintColor={theme.border}
-            thumbTintColor={theme.primary}
-            onSlidingStart={(val) => {
-              setIsSeeking(true);
-              setDragPosition(val);
-            }}
-            onValueChange={(val) => {
-              setIsSeeking(true);
-              setDragPosition(val);
-            }}
-            onSlidingComplete={async (val) => {
-              setDragPosition(val);
-              await seekTo(val);
-              setTimeout(() => {
-                setIsSeeking(false);
-              }, 150);
-            }}
-          />
-
-          <View style={styles.timeRow}>
-            <Text style={styles.timeText}>{formatTime(effectivePosition)}</Text>
-            <Text style={styles.timeText}>{formatTime(duration)}</Text>
-          </View>
-        </View>
+        {/* Seek Slider and Timers (keyed by trackId to reset local drag cleanly on track change) */}
+        <NowPlayingProgressBar
+          key={currentTrack.id}
+          styles={styles}
+          primaryColor={theme.primary}
+          borderColor={theme.border}
+        />
 
         {/* Playback Controls */}
         <View style={styles.controlsRow}>

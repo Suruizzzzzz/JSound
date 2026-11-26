@@ -4,6 +4,7 @@ import { supabase } from '@/services/supabase';
 import { Track, Playlist, SharedPlaylistData } from '@/types/music';
 import {
   getAllTracks,
+  resolveLocalTrackUri,
   saveTracks,
 } from '@/repositories/trackRepository';
 import {
@@ -213,8 +214,11 @@ export async function pullTracksFromCloud(userId: string): Promise<Track[]> {
         is_playlist_only: shouldBePlaylistOnly,
       });
     } else {
-      // Ensure Cloud Sync NEVER flips is_playlist_only back to 0
-      if (shouldBePlaylistOnly === 1 && localTrack.is_playlist_only !== 1) {
+      // Ensure Cloud Sync NEVER moves a downloaded All-Songs track into playlist-only obscurity
+      const hasLocalAudio = Boolean(
+        localTrack.local_audio_uri && localTrack.local_audio_uri.trim().length > 0
+      );
+      if (shouldBePlaylistOnly === 1 && localTrack.is_playlist_only !== 1 && !hasLocalAudio) {
         await db.runAsync(
           'UPDATE tracks SET is_playlist_only = 1 WHERE id = ? AND (user_id = ? OR user_id = "local_guest")',
           [rTrk.id, userId]
@@ -378,10 +382,12 @@ export async function syncPlaylistsToCloud(): Promise<{ success: boolean; error?
  * Checks if the local audio file for a track is missing from device storage.
  */
 export async function isTrackAudioMissing(track: Track): Promise<boolean> {
-  if (!track.local_audio_uri) return true;
-  if (!track.local_audio_uri.startsWith('file://')) return true;
+  const resolved = await resolveLocalTrackUri(track.local_audio_uri);
+  if (!resolved.exists || !resolved.uri) return true;
+  if (resolved.uri.startsWith('content://')) return false;
+  if (!resolved.uri.startsWith('file://')) return true;
   try {
-    const info = await FileSystem.getInfoAsync(track.local_audio_uri);
+    const info = await FileSystem.getInfoAsync(resolved.uri);
     return !info.exists || (info.size !== undefined && info.size < 10000);
   } catch {
     return true;

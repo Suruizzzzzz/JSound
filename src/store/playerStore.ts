@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { Track, RepeatMode } from '@/types/music';
-import { updateTrackOrder } from '@/repositories/trackRepository';
+import {
+  getTrackById,
+  resolveLocalTrackUri,
+  updateTrackOrder,
+} from '@/repositories/trackRepository';
 import {
   loadAndPlayAudio,
   pauseAudio,
@@ -8,7 +12,7 @@ import {
   seekAudio,
   stopAndUnloadAudio,
   updateAudioMetadata,
-  getPlaybackPosition,
+  getCurrentPlayer,
 } from '@/services/audioService';
 import {
   getRelatedOnlineTracks,
@@ -35,6 +39,7 @@ interface PlayerState {
   sleepTimerMinutes: number | null;
   isLoading: boolean;
   isBuffering: boolean;
+  isSeeking: boolean;
   isModalOpen: boolean;
 
   // Actions
@@ -42,6 +47,7 @@ interface PlayerState {
   setQueue: (queue: Track[], context?: PlaybackContext | null) => void;
   setPlaybackContext: (context: PlaybackContext | null) => void;
   setModalOpen: (open: boolean) => void;
+  setIsSeeking: (seeking: boolean) => void;
   toggleShuffle: () => void;
   cycleRepeatMode: () => void;
   setAutoPlay: (enabled: boolean) => void;
@@ -57,6 +63,7 @@ interface PlayerState {
   seekTo: (seconds: number) => Promise<void>;
   removeTrack: (id: string) => Promise<void>;
   clearAllTracks: () => Promise<void>;
+  resetPlaybackOnLogout: () => Promise<void>;
   reorderTracks: (tracks: Track[]) => Promise<void>;
   fetchRelatedRadioTracks: (seedTrack?: Track | null) => Promise<void>;
   updateCurrentOrLibraryTrackArtwork: (trackId: string, newArtworkUri: string | null) => void;
@@ -157,72 +164,69 @@ export function preWarmTrackStreams(tracks: Track[]): void {
 }
 
 let sleepTimerHandle: ReturnType<typeof setTimeout> | null = null;
-let progressIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let radioFetchPromise: Promise<void> | null = null;
 let playbackSessionId = 0;
 let lastSeekTimestamp = 0;
+let lastSeekTarget: number | null = null;
+let lastHandledFinishSession = -1;
+let lastRepeatOneFinishAt = 0;
 
-function startProgressPolling() {
-  stopProgressPolling();
-  const currentSession = playbackSessionId;
-
-  progressIntervalHandle = setInterval(() => {
-    // Drop execution if session has advanced
-    if (currentSession !== playbackSessionId) {
-      stopProgressPolling();
-      return;
+async function resolveTrackWithOfflineFirst(
+  track: Track,
+  libraryTracks: Track[]
+): Promise<Track> {
+  const tryLocalCandidate = async (candidate: Track | undefined | null): Promise<Track | null> => {
+    if (!candidate?.local_audio_uri) return null;
+    if (
+      candidate.local_audio_uri.startsWith('http://') ||
+      candidate.local_audio_uri.startsWith('https://')
+    ) {
+      return null;
     }
+    const resolved = await resolveLocalTrackUri(candidate.local_audio_uri);
+    if (!resolved.exists || !resolved.uri) return null;
+    const resolvedArtResult = candidate.local_artwork_uri
+      ? await resolveLocalTrackUri(candidate.local_artwork_uri)
+      : null;
+    const resolvedArtwork =
+      resolvedArtResult?.exists && resolvedArtResult.uri
+        ? resolvedArtResult.uri
+        : track.local_artwork_uri;
+    return {
+      ...track,
+      local_audio_uri: resolved.uri,
+      local_artwork_uri: resolvedArtwork,
+      headers: undefined,
+      is_streaming: false,
+    };
+  };
 
-    const state = usePlayerStore.getState();
-    if (!state.isPlaying) {
-      stopProgressPolling();
-      return;
-    }
+  // 1. Check the track object itself
+  const directMatch = await tryLocalCandidate(track);
+  if (directMatch) return directMatch;
 
-    const pos = getPlaybackPosition();
-    const fallbackDur =
-      state.currentTrack?.duration && state.currentTrack.duration > 0
-        ? state.currentTrack.duration
-        : 0;
-    const duration = pos.duration > 0 ? pos.duration : fallbackDur;
+  // 2. Check in-memory All-Songs library by exact id or youtube_id
+  const ytId = extractYoutubeId(track);
+  const libraryMatch = libraryTracks.find(
+    (t) =>
+      t.id === track.id ||
+      (ytId !== null && (t.youtube_id === ytId || t.id === `online_youtube_${ytId}`))
+  );
+  const inMemoryLocal = await tryLocalCandidate(libraryMatch);
+  if (inMemoryLocal) return inMemoryLocal;
 
-    if (pos.currentTime >= 0) {
-      usePlayerStore.setState((prev) => {
-        const isRecentSeek = Date.now() - lastSeekTimestamp < 800;
-        const currentPositionMs = prev.position * 1000;
-        const reportedPositionMs = pos.currentTime * 1000;
+  // 3. Check SQLite directly (catches downloaded playlist-only tracks not loaded into state.tracks)
+  const dbTrack = await getTrackById(track.id);
+  const dbLocal = await tryLocalCandidate(dbTrack);
+  if (dbLocal) return dbLocal;
 
-        let nextPos = prev.position;
-        // Monotonic Forward Guard:
-        // Ignore jittery backward currentTime reports (< 2500ms jump back) during normal playback
-        if (
-          !isRecentSeek &&
-          reportedPositionMs < currentPositionMs &&
-          currentPositionMs - reportedPositionMs < 2500
-        ) {
-          nextPos = prev.position;
-        } else {
-          nextPos = pos.currentTime;
-        }
-
-        const nextDur = duration > 0 ? duration : prev.duration;
-        if (Math.abs(prev.position - nextPos) < 0.05 && prev.duration === nextDur) {
-          return prev;
-        }
-        return {
-          position: nextPos,
-          duration: nextDur,
-        };
-      });
-    }
-  }, 250);
-}
-
-function stopProgressPolling() {
-  if (progressIntervalHandle) {
-    clearInterval(progressIntervalHandle);
-    progressIntervalHandle = null;
+  if (ytId && track.id !== `online_youtube_${ytId}`) {
+    const altDbTrack = await getTrackById(`online_youtube_${ytId}`);
+    const altDbLocal = await tryLocalCandidate(altDbTrack);
+    if (altDbLocal) return altDbLocal;
   }
+
+  return track;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -239,6 +243,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   sleepTimerMinutes: null,
   isLoading: false,
   isBuffering: false,
+  isSeeking: false,
   isModalOpen: false,
 
   setTracks: (tracks) => set({ tracks }),
@@ -249,6 +254,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setPlaybackContext: (playbackContext) => set({ playbackContext }),
 
   setModalOpen: (isModalOpen) => set({ isModalOpen }),
+
+  setIsSeeking: (isSeeking) => set({ isSeeking }),
 
   toggleShuffle: () => {
     set((state) => ({ isShuffle: !state.isShuffle }));
@@ -288,7 +295,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   playTrack: async (track: Track, customQueue?: Track[], context?: PlaybackContext | null) => {
     const session = ++playbackSessionId;
-    startProgressPolling();
+    lastHandledFinishSession = -1;
+    lastSeekTarget = null;
+    lastSeekTimestamp = 0;
 
     const state = get();
     const newQueue = customQueue || (state.queue.length > 0 ? state.queue : state.tracks);
@@ -296,84 +305,101 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       ? newQueue
       : [track, ...newQueue];
 
-    let activeTrack = track;
-
     // 1. Instant Optimistic Track Selection (0ms UI response)
-    // Immediately update currentTrack, isBuffering = true, isPlaying = true, and queue
-    // so mini-player and Now Playing modal update immediately without UI freeze.
     set({
-      currentTrack: activeTrack,
+      currentTrack: track,
       queue: resolvedQueue,
       isPlaying: true,
       isLoading: true,
       isBuffering: true,
+      isSeeking: false,
       position: 0,
-      duration: activeTrack.duration || 0,
+      duration: track.duration || 0,
       ...(context !== undefined ? { playbackContext: context } : {}),
     });
 
-    // 2. Check In-Memory Stream URL Cache first (0ms instant startup)
-    const cachedStream = getCachedStream(activeTrack.id);
-    if (cachedStream && !activeTrack.local_audio_uri) {
-      activeTrack = {
-        ...activeTrack,
-        local_audio_uri: cachedStream.url,
-        headers: cachedStream.headers,
-        is_streaming: true,
-      };
-    }
+    // 2. Offline-First Priority: resolve verified local audio before any network calls
+    let activeTrack = await resolveTrackWithOfflineFirst(track, state.tracks);
+    if (session !== playbackSessionId) return;
 
-    // 3. Dynamically resolve online audio stream if local_audio_uri is not yet resolved
-    if (!activeTrack.local_audio_uri && (activeTrack.is_streaming || activeTrack.source === 'youtube')) {
-      const ytId = extractYoutubeId(activeTrack);
+    const isLocalReady =
+      Boolean(activeTrack.local_audio_uri) &&
+      !activeTrack.local_audio_uri.startsWith('http://') &&
+      !activeTrack.local_audio_uri.startsWith('https://');
 
-      if (ytId) {
-        try {
-          const streamResult = await resolveOnlineStreamUrl({
-            id: ytId,
-            title: activeTrack.title,
-            artist: activeTrack.artist,
-            duration: activeTrack.duration,
-            thumbnailUrl: activeTrack.local_artwork_uri,
-            source: 'youtube',
-          });
+    if (!isLocalReady) {
+      // 3. Check In-Memory Stream URL Cache (0ms instant startup)
+      const cachedStream = getCachedStream(activeTrack.id);
+      if (cachedStream) {
+        activeTrack = {
+          ...activeTrack,
+          local_audio_uri: cachedStream.url,
+          headers: cachedStream.headers,
+          is_streaming: true,
+        };
+      }
 
-          // Cache the resolved stream URL (TTL: 30 minutes)
-          setCachedStream(activeTrack.id, streamResult.url, streamResult.headers);
+      // 4. Dynamically resolve online audio stream only if not already cached
+      if (
+        (!activeTrack.local_audio_uri || activeTrack.is_streaming) &&
+        !cachedStream &&
+        (activeTrack.is_streaming || activeTrack.source === 'youtube')
+      ) {
+        const ytId = extractYoutubeId(activeTrack);
 
-          activeTrack = {
-            ...activeTrack,
-            local_audio_uri: streamResult.url,
-            headers: streamResult.headers,
-            is_streaming: true,
-          };
+        if (ytId) {
+          try {
+            const streamResult = await resolveOnlineStreamUrl({
+              id: ytId,
+              title: activeTrack.title,
+              artist: activeTrack.artist,
+              duration: activeTrack.duration,
+              thumbnailUrl: activeTrack.local_artwork_uri,
+              source: 'youtube',
+            });
+            if (session !== playbackSessionId) return;
 
-          set((s) => ({
-            currentTrack: activeTrack,
-            queue: s.queue.map((t) => (t.id === activeTrack.id ? activeTrack : t)),
-          }));
-        } catch (resErr) {
-          console.warn('[PlayerStore] Failed to resolve online stream for:', activeTrack.title, resErr);
-          const currIdx = resolvedQueue.findIndex((t) => t.id === activeTrack.id);
-          const nextIdx = (currIdx + 1) % resolvedQueue.length;
-          if (resolvedQueue.length > 1 && nextIdx !== currIdx) {
-            await get().playTrack(resolvedQueue[nextIdx], resolvedQueue, context);
-            return;
+            setCachedStream(activeTrack.id, streamResult.url, streamResult.headers);
+
+            activeTrack = {
+              ...activeTrack,
+              local_audio_uri: streamResult.url,
+              headers: streamResult.headers,
+              is_streaming: true,
+            };
+          } catch (resErr) {
+            if (session !== playbackSessionId) return;
+            console.warn('[PlayerStore] Failed to resolve online stream for:', activeTrack.title, resErr);
           }
         }
       }
     }
 
-    if (!activeTrack.local_audio_uri && !activeTrack.is_streaming) {
+    if (session !== playbackSessionId) return;
+
+    // If unplayable (no valid local file and online resolution failed), try next locally-playable or remaining queue track once without looping
+    if (!activeTrack.local_audio_uri) {
       console.warn('Track audio is not on device:', activeTrack.title);
-      const nextPlayable = resolvedQueue.find(
-        (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== activeTrack.id
+      const currIdx = resolvedQueue.findIndex((t) => t.id === activeTrack.id);
+      const nextLocalPlayable = resolvedQueue.find(
+        (t) =>
+          t.id !== activeTrack.id &&
+          Boolean(t.local_audio_uri) &&
+          !t.local_audio_uri.startsWith('http')
       );
-      if (nextPlayable) {
-        await get().playTrack(nextPlayable, resolvedQueue, context);
-      } else {
-        set({ isPlaying: false, isLoading: false, isBuffering: false, currentTrack: activeTrack });
+      if (nextLocalPlayable) {
+        await get().playTrack(nextLocalPlayable, resolvedQueue, context);
+        return;
       }
+      const nextIdx = currIdx >= 0 ? currIdx + 1 : 0;
+      if (resolvedQueue.length > 1 && nextIdx < resolvedQueue.length) {
+        const candidate = resolvedQueue[nextIdx];
+        if (candidate && candidate.id !== activeTrack.id && candidate.is_streaming) {
+          await get().playTrack(candidate, resolvedQueue, context);
+          return;
+        }
+      }
+      set({ isPlaying: false, isLoading: false, isBuffering: false, currentTrack: activeTrack });
       return;
     }
 
@@ -389,10 +415,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       ...(context !== undefined ? { playbackContext: context } : {}),
     });
 
-    // 4. Silently prefetch and cache the next track's stream in the background
-    const currTrackIndex = updatedQueue.findIndex((t) => t.id === activeTrack.id);
-    prefetchNextTrackStream(updatedQueue, currTrackIndex);
-
     try {
       const audioSource = activeTrack.headers
         ? { uri: activeTrack.local_audio_uri, headers: activeTrack.headers }
@@ -405,45 +427,84 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         artworkUrl: activeTrack.local_artwork_uri || undefined,
       };
 
-      await loadAndPlayAudio(
+      const player = await loadAndPlayAudio(
         audioSource,
         (status) => {
-          if (session !== playbackSessionId) return; // Stale session callback guard
+          if (session !== playbackSessionId) return;
           const rawPosition = status.currentTime ?? 0;
-          const duration = status.duration > 0 ? status.duration : (activeTrack.duration || 0);
+          const duration = status.duration > 0 ? status.duration : activeTrack.duration || 0;
 
-          // While buffering or loading stream, do not flip isPlaying to false prematurely
           const isBuffering =
             status.isBuffering ||
             status.timeControlStatus === 'waiting' ||
             !status.isLoaded;
 
           set((prevState) => {
-            // Guard against transient 0 during seeking or intermediate buffering
+            if (session !== playbackSessionId) return prevState;
+            const nextIsPlaying = isBuffering ? prevState.isPlaying : status.playing;
+
+            // Freeze position updates while the user is actively dragging the seek scrubber
+            if (prevState.isSeeking) {
+              if (
+                prevState.isPlaying === nextIsPlaying &&
+                prevState.isLoading === isBuffering &&
+                prevState.isBuffering === isBuffering &&
+                prevState.duration === duration
+              ) {
+                return prevState;
+              }
+              return {
+                isPlaying: nextIsPlaying,
+                isLoading: isBuffering,
+                isBuffering,
+                duration,
+              };
+            }
+
             let nextPosition = prevState.position;
             if (
               typeof status.currentTime === 'number' &&
               !isNaN(status.currentTime) &&
               status.currentTime >= 0
             ) {
-              const isRecentSeek = Date.now() - lastSeekTimestamp < 800;
+              const isWithinSeekWindow = Date.now() - lastSeekTimestamp < 1200;
               const currentPositionMs = prevState.position * 1000;
               const reportedPositionMs = status.currentTime * 1000;
 
-              // Monotonic Forward Guard: ignore backward jitter < 2500ms during normal playback
               if (
-                !isRecentSeek &&
+                isWithinSeekWindow &&
+                lastSeekTarget !== null &&
+                Math.abs(status.currentTime - lastSeekTarget) > 1.5
+              ) {
+                // Ignore pre-seek status ticks carrying the old playback position
+                nextPosition = prevState.position;
+              } else if (
+                !isWithinSeekWindow &&
                 reportedPositionMs < currentPositionMs &&
                 currentPositionMs - reportedPositionMs < 2500
               ) {
+                // Ignore minor backward jitter during normal playback
                 nextPosition = prevState.position;
               } else {
                 nextPosition = status.currentTime;
+                if (lastSeekTarget !== null && Math.abs(status.currentTime - lastSeekTarget) <= 1.5) {
+                  lastSeekTarget = null;
+                }
               }
             }
 
+            if (
+              Math.abs(prevState.position - nextPosition) < 0.05 &&
+              prevState.duration === duration &&
+              prevState.isPlaying === nextIsPlaying &&
+              prevState.isLoading === isBuffering &&
+              prevState.isBuffering === isBuffering
+            ) {
+              return prevState;
+            }
+
             return {
-              isPlaying: isBuffering ? true : status.playing,
+              isPlaying: nextIsPlaying,
               isLoading: isBuffering,
               isBuffering,
               position: nextPosition,
@@ -451,16 +512,54 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
             };
           });
 
-          if (status.didJustFinish && (rawPosition > 1 || (duration > 0 && rawPosition >= duration - 1.5))) {
+          if (
+            status.didJustFinish &&
+            lastHandledFinishSession !== session &&
+            (rawPosition > 1 || (duration > 0 && rawPosition >= duration - 1.5))
+          ) {
             const currentRepeat = get().repeatMode;
             const autoPlay = get().autoPlay;
             if (currentRepeat === 'one') {
-              get().seekTo(0).then(() => resumeAudio());
-            } else if (autoPlay) {
-              get().playNext();
-            } else {
+              const now = Date.now();
+              if (now - lastRepeatOneFinishAt > 1000) {
+                lastRepeatOneFinishAt = now;
+                lastSeekTarget = 0;
+                lastSeekTimestamp = now;
+                set({ position: 0, isPlaying: true });
+                seekAudio(0)
+                  .then(() => resumeAudio())
+                  .catch(() => {});
+              }
+              return;
+            }
+
+            lastHandledFinishSession = session;
+            if (!autoPlay) {
               pauseAudio();
-              set({ isPlaying: false, isBuffering: false, position: 0 });
+              set({ isPlaying: false, isBuffering: false, isLoading: false, position: 0 });
+              return;
+            }
+
+            const {
+              queue: activeQueue,
+              currentTrack: activeCur,
+              playbackContext: activeCtx,
+              isShuffle,
+            } = get();
+            const currIdx = activeQueue.findIndex((t) => t.id === activeCur?.id);
+            const isAtEnd =
+              activeQueue.length === 0 || (currIdx >= 0 && currIdx >= activeQueue.length - 1);
+
+            if (
+              currentRepeat === 'off' &&
+              !isShuffle &&
+              isAtEnd &&
+              activeCtx?.type !== 'search-radio'
+            ) {
+              pauseAudio();
+              set({ isPlaying: false, isBuffering: false, isLoading: false, position: 0 });
+            } else {
+              get().playNext();
             }
           }
         },
@@ -468,15 +567,22 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         metadata
       );
 
+      if (session !== playbackSessionId || !player) return;
+
       set({ isPlaying: true, isLoading: false, isBuffering: false });
+
+      // Silently prefetch the next online track only after current track starts cleanly
+      const currTrackIndex = updatedQueue.findIndex((t) => t.id === activeTrack.id);
+      prefetchNextTrackStream(updatedQueue, currTrackIndex);
     } catch (error) {
+      if (session !== playbackSessionId) return;
       console.warn('Error playing track:', error);
       set({ isPlaying: false, isLoading: false, isBuffering: false });
     }
   },
 
   togglePlayPause: async () => {
-    const { currentTrack, isPlaying } = get();
+    const { currentTrack, isPlaying, duration, position, playTrack } = get();
     if (!currentTrack) return;
 
     try {
@@ -484,6 +590,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         await pauseAudio();
         set({ isPlaying: false, isBuffering: false, isLoading: false });
       } else {
+        if (!getCurrentPlayer()) {
+          await playTrack(currentTrack);
+          return;
+        }
+        if (duration > 0 && position >= duration - 0.5) {
+          lastSeekTarget = 0;
+          lastSeekTimestamp = Date.now();
+          await seekAudio(0);
+          set({ position: 0 });
+        }
         await resumeAudio();
         set({ isPlaying: true });
       }
@@ -634,8 +750,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   seekTo: async (seconds: number) => {
+    const maxDur = get().duration;
+    const clamped = Math.max(0, maxDur > 0 ? Math.min(seconds, maxDur) : seconds);
     lastSeekTimestamp = Date.now();
-    const clamped = Math.max(0, Math.min(seconds, get().duration || seconds));
+    lastSeekTarget = clamped;
     set({ position: clamped });
     try {
       await seekAudio(clamped);
@@ -662,6 +780,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   clearAllTracks: async () => {
+    playbackSessionId += 1;
+    lastHandledFinishSession = -1;
+    lastSeekTarget = null;
     try {
       await stopAndUnloadAudio();
     } catch (e) {
@@ -672,9 +793,41 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       queue: [],
       currentTrack: null,
       isPlaying: false,
+      isLoading: false,
       isBuffering: false,
+      isSeeking: false,
       position: 0,
       duration: 0,
+    });
+  },
+
+  resetPlaybackOnLogout: async () => {
+    playbackSessionId += 1;
+    lastHandledFinishSession = -1;
+    lastSeekTarget = null;
+    lastSeekTimestamp = 0;
+    if (sleepTimerHandle) {
+      clearTimeout(sleepTimerHandle);
+      sleepTimerHandle = null;
+    }
+    streamUrlCache.clear();
+    try {
+      await stopAndUnloadAudio();
+    } catch (e) {
+      console.warn('Error unloading audio on logout:', e);
+    }
+    set({
+      tracks: [],
+      queue: [],
+      currentTrack: null,
+      isPlaying: false,
+      isLoading: false,
+      isBuffering: false,
+      isSeeking: false,
+      position: 0,
+      duration: 0,
+      sleepTimerMinutes: null,
+      playbackContext: null,
     });
   },
 
@@ -744,11 +897,3 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 }));
-
-usePlayerStore.subscribe((state, prevState) => {
-  if (state.isPlaying && !prevState.isPlaying) {
-    startProgressPolling();
-  } else if (!state.isPlaying && prevState.isPlaying) {
-    stopProgressPolling();
-  }
-});
