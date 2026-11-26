@@ -1,0 +1,314 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index fb2d0b5..b608fce 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -69,6 +69,28 @@ class AudioPlayer(
+   override var mediaSession: MediaSession = buildBasicMediaSession(context, ref) { requestPlay() }
+   override val serviceConnection = AudioPlaybackServiceConnection(WeakReference(this), appContext)
+ 
++  override val supportsNextTrack: Boolean
++    get() = lockScreenOptions?.showNextTrack == true
++
++  override val supportsPreviousTrack: Boolean
++    get() = lockScreenOptions?.showPreviousTrack == true
++
++  override fun nextTrack() {
++    try {
++      emit("nextTrack", emptyMap<String, Any>())
++    } catch (e: Exception) {
++      Log.w(TAG, "Failed to emit nextTrack event", e)
++    }
++  }
++
++  override fun previousTrack() {
++    try {
++      emit("previousTrack", emptyMap<String, Any>())
++    } catch (e: Exception) {
++      Log.w(TAG, "Failed to emit previousTrack event", e)
++    }
++  }
++
+   override val isLive: Boolean
+     get() = ref.isCurrentMediaItemLive
+ 
+@@ -258,13 +280,28 @@ class AudioPlayer(
+   }
+ 
+   override fun releasePlayer() {
+-    mediaSession.release()
+-    if (isActiveForLockScreen) {
+-      serviceConnection.playbackServiceBinder?.service?.unregisterPlayable()
++    try {
++      mediaSession.release()
++    } catch (_: Exception) {
++    }
++    try {
++      if (isActiveForLockScreen) {
++        serviceConnection.playbackServiceBinder?.service?.unregisterPlayable()
++      }
++    } catch (_: Exception) {
++    }
++    try {
++      serviceConnection.unbind()
++    } catch (_: Exception) {
++    }
++    try {
++      visualizer?.release()
++    } catch (_: Exception) {
++    }
++    try {
++      super.releasePlayer()
++    } catch (_: Exception) {
+     }
+-    serviceConnection.unbind()
+-    visualizer?.release()
+-    super.releasePlayer()
+   }
+ 
+   companion object {
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 53c36f7..bd4c124 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -419,11 +419,71 @@ class AudioControlsService : MediaSessionService() {
+         seekTo((currentPosition - backwardMs).coerceAtLeast(0))
+       }
+ 
++      override fun hasNextMediaItem(): Boolean {
++        return if (playable.supportsNextTrack) true else super.hasNextMediaItem()
++      }
++
++      override fun hasPreviousMediaItem(): Boolean {
++        return if (playable.supportsPreviousTrack) true else super.hasPreviousMediaItem()
++      }
++
++      override fun seekToNext() {
++        if (playable.supportsNextTrack) {
++          try {
++            playable.nextTrack()
++          } catch (_: Exception) {
++          }
++        } else {
++          super.seekToNext()
++        }
++      }
++
++      override fun seekToNextMediaItem() {
++        if (playable.supportsNextTrack) {
++          try {
++            playable.nextTrack()
++          } catch (_: Exception) {
++          }
++        } else {
++          super.seekToNextMediaItem()
++        }
++      }
++
++      override fun seekToPrevious() {
++        if (playable.supportsPreviousTrack) {
++          try {
++            playable.previousTrack()
++          } catch (_: Exception) {
++          }
++        } else {
++          super.seekToPrevious()
++        }
++      }
++
++      override fun seekToPreviousMediaItem() {
++        if (playable.supportsPreviousTrack) {
++          try {
++            playable.previousTrack()
++          } catch (_: Exception) {
++          }
++        } else {
++          super.seekToPreviousMediaItem()
++        }
++      }
++
+       override fun getAvailableCommands(): Player.Commands {
+         val commands = super.getAvailableCommands().buildUpon()
+         if (isLive) {
+           commands.remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+         }
++        if (playable.supportsNextTrack) {
++          commands.add(Player.COMMAND_SEEK_TO_NEXT)
++          commands.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
++        }
++        if (playable.supportsPreviousTrack) {
++          commands.add(Player.COMMAND_SEEK_TO_PREVIOUS)
++          commands.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
++        }
+         return commands.build()
+       }
+     }
+@@ -450,34 +510,41 @@ class AudioControlsService : MediaSessionService() {
+       sessionMetadataPlayer = null
+ 
+       appContext?.mainQueue?.launch {
+-        val context = appContext?.reactContext ?: return@launch
+-        val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(playable, options)).apply {
+-          updateMetadata(metadata)
+-        }
+-        // Distinguish this lock-screen session from the basic session built in
+-        // `buildBasicMediaSession` (and from sessions for other players); two
+-        // MediaSession instances with the empty default ID throw on construction.
+-        val session = MediaSession.Builder(context, sessionPlayer)
+-          .setId("ExpoAudioLockScreenSession_${playable.player.hashCode()}")
+-          .setCallback(AudioMediaSessionCallback(this@AudioControlsService))
+-          .build()
+-
+-        // Replace the basic media session with a session connected to our playback service.
+-        playable.mediaSession.release()
+-        playable.mediaSession = session
++        try {
++          val context = appContext?.reactContext ?: return@launch
++          val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(playable, options)).apply {
++            updateMetadata(metadata)
++          }
++          // Distinguish this lock-screen session from the basic session built in
++          // `buildBasicMediaSession` (and from sessions for other players); two
++          // MediaSession instances with the empty default ID throw on construction.
++          val session = MediaSession.Builder(context, sessionPlayer)
++            .setId("ExpoAudioLockScreenSession_${playable.player.hashCode()}")
++            .setCallback(AudioMediaSessionCallback(this@AudioControlsService))
++            .build()
++
++          // Replace the basic media session with a session connected to our playback service.
++          try {
++            playable.mediaSession.release()
++          } catch (_: Exception) {
++          }
++          playable.mediaSession = session
+ 
+-        addSession(session)
+-        mediaSession = session
+-        sessionMetadataPlayer = sessionPlayer
++          addSession(session)
++          mediaSession = session
++          sessionMetadataPlayer = sessionPlayer
+ 
+-        updateSessionCustomLayout(playable.player.isPlaying)
++          updateSessionCustomLayout(playable.player.isPlaying)
+ 
+-        postOrStartForegroundNotification(startInForeground = true)
++          postOrStartForegroundNotification(startInForeground = true)
+ 
+-        addPlayerListener(playable)
++          addPlayerListener(playable)
+ 
+-        // Initial update now that session exists
+-        postOrStartForegroundNotification(startInForeground = false)
++          // Initial update now that session exists
++          postOrStartForegroundNotification(startInForeground = false)
++        } catch (e: Exception) {
++          appContext?.jsLogger?.warn("Failed to set active playable for lock screen", e)
++        }
+       }
+     } else {
+       clearSessionInternal()
+@@ -525,35 +592,65 @@ class AudioControlsService : MediaSessionService() {
+     metadata: Metadata?,
+     options: AudioLockScreenOptions?
+   ) {
++    val effectiveOptions = options ?: currentOptions
+     if (playable == currentPlayable) {
++      val needsSessionRebuild =
++        mediaSession == null ||
++        currentOptions?.isLiveStream != effectiveOptions?.isLiveStream ||
++        currentOptions?.seekForwardIntervalSeconds != effectiveOptions?.seekForwardIntervalSeconds ||
++        currentOptions?.seekBackwardIntervalSeconds != effectiveOptions?.seekBackwardIntervalSeconds
++
+       currentMetadata = metadata
+-      currentOptions = options
++      currentOptions = effectiveOptions
+       updateArtwork(metadata, postUpdate = false)
+ 
+-      mediaSession?.release()
+-      sessionMetadataPlayer = null
+-      appContext?.mainQueue?.launch {
+-        val context = appContext?.reactContext ?: return@launch
+-        val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(playable, options)).apply {
+-          updateMetadata(metadata)
++      if (!needsSessionRebuild) {
++        sessionMetadataPlayer?.updateMetadata(metadata)
++        appContext?.mainQueue?.launch {
++          try {
++            updateSessionCustomLayout(playable.player.isPlaying)
++            postOrStartForegroundNotification(startInForeground = false)
++          } catch (_: Exception) {
++          }
+         }
+-        val session = MediaSession.Builder(context, sessionPlayer)
+-          .setId("ExpoAudioLockScreenSession_${playable.player.hashCode()}")
+-          .setCallback(AudioMediaSessionCallback(this@AudioControlsService))
+-          .build()
++        return
++      }
+ 
+-        playable.mediaSession.release()
+-        playable.mediaSession = session
++      try {
++        mediaSession?.release()
++      } catch (_: Exception) {
++      }
++      mediaSession = null
++      sessionMetadataPlayer = null
++      appContext?.mainQueue?.launch {
++        try {
++          val context = appContext?.reactContext ?: return@launch
++          val sessionPlayer = MetadataInjectingPlayer(resolveSessionPlayer(playable, effectiveOptions)).apply {
++            updateMetadata(metadata)
++          }
++          val session = MediaSession.Builder(context, sessionPlayer)
++            .setId("ExpoAudioLockScreenSession_${playable.player.hashCode()}")
++            .setCallback(AudioMediaSessionCallback(this@AudioControlsService))
++            .build()
++
++          try {
++            playable.mediaSession.release()
++          } catch (_: Exception) {
++          }
++          playable.mediaSession = session
+ 
+-        addSession(session)
+-        mediaSession = session
+-        sessionMetadataPlayer = sessionPlayer
++          addSession(session)
++          mediaSession = session
++          sessionMetadataPlayer = sessionPlayer
+ 
+-        updateSessionCustomLayout(playable.player.isPlaying)
+-        postOrStartForegroundNotification(startInForeground = false)
++          updateSessionCustomLayout(playable.player.isPlaying)
++          postOrStartForegroundNotification(startInForeground = false)
++        } catch (e: Exception) {
++          appContext?.jsLogger?.warn("Failed to update lock screen session options", e)
++        }
+       }
+     } else {
+-      setActivePlayableInternal(playable, metadata, options)
++      setActivePlayableInternal(playable, metadata, effectiveOptions)
+     }
+   }
+ 
+@@ -576,11 +673,17 @@ class AudioControlsService : MediaSessionService() {
+   }
+ 
+   fun nextTrack() {
+-    currentPlayable?.takeIf { it.supportsNextTrack }?.nextTrack()
++    try {
++      currentPlayable?.takeIf { it.supportsNextTrack }?.nextTrack()
++    } catch (_: Exception) {
++    }
+   }
+ 
+   fun previousTrack() {
+-    currentPlayable?.takeIf { it.supportsPreviousTrack }?.previousTrack()
++    try {
++      currentPlayable?.takeIf { it.supportsPreviousTrack }?.previousTrack()
++    } catch (_: Exception) {
++    }
+   }
+ 
+   fun supportsNextTrack(): Boolean {

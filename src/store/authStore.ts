@@ -272,35 +272,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!authListenerSubscribed) {
           authListenerSubscribed = true;
           supabase.auth.onAuthStateChange(async (event, session) => {
-            if (session?.user) {
-              if (explicitSignOutInProgress) return;
-              const sbUser = session.user;
-              await applyAuthenticatedUser(sbUser, set, { sync_status: 'synced' });
-              refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
-              await handleUserLoginTransition(sbUser.id);
-            } else if (event === 'SIGNED_OUT') {
-              // Only clear user & switch to local_guest on explicit Sign Out — NEVER when offline!
-              if (!explicitSignOutInProgress && lastKnownUserId) {
+            try {
+              if (session?.user) {
+                if (explicitSignOutInProgress) return;
+                const sbUser = session.user;
+                await applyAuthenticatedUser(sbUser, set, { sync_status: 'synced' });
+                refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
+                await handleUserLoginTransition(sbUser.id);
+              } else if (event === 'SIGNED_OUT') {
+                // Only clear user & switch to local_guest on explicit Sign Out — NEVER when offline!
+                if (!explicitSignOutInProgress && lastKnownUserId) {
+                  set((state) => ({
+                    user: {
+                      ...state.user,
+                      sync_status: 'offline',
+                    },
+                    isAuthHydrated: true,
+                  }));
+                  return;
+                }
+                const savedName = await getSetting('profile_display_name', 'JStream Listener');
+                const savedAvatar = await getSetting('profile_avatar_uri', null);
                 set((state) => ({
                   user: {
-                    ...state.user,
-                    sync_status: 'offline',
+                    ...GUEST_USER,
+                    name: savedName || GUEST_USER.name,
+                    avatar_url: savedAvatar || null,
                   },
+                  isGuestSession: explicitSignOutInProgress ? false : state.isGuestSession,
                   isAuthHydrated: true,
                 }));
-                return;
               }
-              const savedName = await getSetting('profile_display_name', 'JStream Listener');
-              const savedAvatar = await getSetting('profile_avatar_uri', null);
-              set((state) => ({
-                user: {
-                  ...GUEST_USER,
-                  name: savedName || GUEST_USER.name,
-                  avatar_url: savedAvatar || null,
-                },
-                isGuestSession: explicitSignOutInProgress ? false : state.isGuestSession,
-                isAuthHydrated: true,
-              }));
+            } catch (authEventErr) {
+              console.warn('[Auth] Auth state change handler warning:', authEventErr);
             }
           });
         }

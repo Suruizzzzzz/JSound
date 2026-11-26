@@ -14,7 +14,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/store/authStore';
-import { setSetting, getSetting } from '@/lib/database';
+import { initDatabase, setSetting, getSetting } from '@/lib/database';
 import { createStyles } from '@/styles/welcome.styles';
 
 export default function WelcomeScreen() {
@@ -170,11 +170,26 @@ export default function WelcomeScreen() {
     useCallback(() => {
       let isMounted = true;
 
-      // Confirm root <Stack> navigator is mounted and ready before attempting navigation
-      if (!rootNavState?.key) return;
+      // Failsafe timeout to prevent any splash hanging even if rootNavState?.key isn't ready on first tick
+      const failsafeTimer = setTimeout(() => {
+        if (isMounted) {
+          setIsCheckingWelcome(false);
+        }
+        SplashScreen.hideAsync().catch(() => {});
+      }, 1000);
+
+      // Confirm root <Stack> navigator is mounted and ready before attempting navigation;
+      // useFocusEffect re-runs once rootNavState?.key becomes available.
+      if (!rootNavState?.key) {
+        return () => {
+          isMounted = false;
+          clearTimeout(failsafeTimer);
+        };
+      }
 
       async function checkExistingWelcome() {
         try {
+          await initDatabase();
           if (!useAuthStore.getState().isAuthHydrated) {
             await useAuthStore.getState().initProfile();
           }
@@ -196,14 +211,6 @@ export default function WelcomeScreen() {
       }
 
       checkExistingWelcome();
-
-      // Failsafe timeout to prevent any splash hanging
-      const failsafeTimer = setTimeout(() => {
-        if (isMounted) {
-          setIsCheckingWelcome(false);
-        }
-        SplashScreen.hideAsync().catch(() => {});
-      }, 1000);
 
       return () => {
         isMounted = false;

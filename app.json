@@ -7,6 +7,7 @@
     "icon": "./assets/icon.png",
     "scheme": "jstream",
     "userInterfaceStyle": "dark",
+    "backgroundColor": "#0A0A0A",
     "ios": {
       "icon": "./assets/icon.png",
       "infoPlist": {
@@ -18,6 +19,7 @@
     "android": {
       "package": "com.jstream.music",
       "versionCode": 1,
+      "backgroundColor": "#0A0A0A",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0A0A0A"

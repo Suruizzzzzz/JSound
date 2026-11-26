@@ -4,7 +4,39 @@ import { Track, Playlist } from '@/types/music';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 let initDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let isDbInitialized = false;
 let activeUserIdGetter: (() => string) | null = null;
+
+async function readSettingRaw(
+  db: SQLite.SQLiteDatabase,
+  key: string,
+  defaultValue: string | null = null
+): Promise<string | null> {
+  try {
+    const row = await db.getFirstAsync<{ value: string }>(
+      'SELECT value FROM app_settings WHERE key = ?',
+      [key]
+    );
+    return row?.value ?? defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+async function writeSettingRaw(
+  db: SQLite.SQLiteDatabase,
+  key: string,
+  value: string
+): Promise<void> {
+  try {
+    await db.runAsync(
+      'INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)',
+      [key, value]
+    );
+  } catch (err) {
+    console.warn('Failed to persist setting:', err);
+  }
+}
 
 export function registerActiveUserIdGetter(getter: () => string) {
   activeUserIdGetter = getter;
@@ -410,10 +442,10 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
   // One-time automatic cleanup migration for leaked imported playlist tracks in All Songs
   try {
     const migrationFlagKey = 'migration_cleanup_imported_tracks_leak_v1';
-    const hasRun = await getSetting(migrationFlagKey);
+    const hasRun = await readSettingRaw(db, migrationFlagKey);
     if (!hasRun) {
       await cleanupImportedTracks();
-      await setSetting(migrationFlagKey, 'true');
+      await writeSettingRaw(db, migrationFlagKey, 'true');
       console.log('✓ Successfully executed one-time cleanup migration for imported playlist tracks');
     }
   } catch (cleanErr) {
@@ -426,7 +458,7 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     const cachedUserId =
       activeUserId && activeUserId !== 'local_guest'
         ? activeUserId
-        : await getSetting('sb_storage_@jstream_last_user_id');
+        : await readSettingRaw(db, 'sb_storage_@jstream_last_user_id');
     if (cachedUserId && cachedUserId !== 'local_guest') {
       await claimGuestLibrary(cachedUserId);
     }
@@ -434,8 +466,10 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     console.warn('[Database] Auto-claim guest library startup warning:', claimErr);
   }
 
+    isDbInitialized = true;
     return db;
   })().catch((err) => {
+    isDbInitialized = false;
     initDbPromise = null;
     throw err;
   });
@@ -445,12 +479,8 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
 
 export async function getSetting(key: string, defaultValue: string | null = null): Promise<string | null> {
   try {
-    const db = await getDatabase();
-    const row = await db.getFirstAsync<{ value: string }>(
-      'SELECT value FROM app_settings WHERE key = ?',
-      [key]
-    );
-    return row?.value ?? defaultValue;
+    const db = isDbInitialized ? await getDatabase() : await initDatabase();
+    return await readSettingRaw(db, key, defaultValue);
   } catch {
     return defaultValue;
   }
@@ -458,11 +488,8 @@ export async function getSetting(key: string, defaultValue: string | null = null
 
 export async function setSetting(key: string, value: string): Promise<void> {
   try {
-    const db = await getDatabase();
-    await db.runAsync(
-      'INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)',
-      [key, value]
-    );
+    const db = isDbInitialized ? await getDatabase() : await initDatabase();
+    await writeSettingRaw(db, key, value);
   } catch (err) {
     console.warn('Failed to persist setting:', err);
   }

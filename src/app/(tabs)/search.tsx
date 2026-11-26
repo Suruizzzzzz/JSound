@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +16,6 @@ import {
   searchOnlineTracks,
   downloadTrackToOfflineLibrary,
   cancelTrackDownload,
-  resolveOnlineStreamUrl,
   OnlineTrackResult,
 } from '@/services/musicDownloadService';
 import { Track } from '@/types/music';
@@ -25,7 +25,18 @@ import { setSetting } from '@/lib/database';
 import { usePlayerStore } from '@/store/playerStore';
 import { registerGuideTarget, useGuideStore } from '@/store/guideStore';
 import { useThemeStore } from '@/store/themeStore';
+import { ThemeColors } from '@/constants/theme';
 import { createStyles } from '@/styles/search.styles';
+
+function runAfterCurrentFrame(fn: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      setTimeout(fn, 0);
+    });
+  } else {
+    setTimeout(fn, 0);
+  }
+}
 
 function formatDuration(seconds: number): string {
   if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
@@ -73,17 +84,203 @@ function findDemoTargetTrack(results: OnlineTrackResult[]): OnlineTrackResult | 
   return pool[0];
 }
 
+interface SearchTrackRowProps {
+  item: OnlineTrackResult;
+  index: number;
+  savedTrack?: Track;
+  downloadPct?: number;
+  isResolving: boolean;
+  theme: ThemeColors;
+  styles: ReturnType<typeof createStyles>;
+  onMainPress: (item: OnlineTrackResult) => void;
+  onDownload: (item: OnlineTrackResult) => void;
+  onCancelDownload: (trackId: string) => void;
+}
+
+const SearchTrackRow = React.memo(function SearchTrackRow({
+  item,
+  index,
+  savedTrack,
+  downloadPct,
+  isResolving,
+  theme,
+  styles,
+  onMainPress,
+  onDownload,
+  onCancelDownload,
+}: SearchTrackRowProps) {
+  const streamTrackId = `stream_${item.source}_${item.id}`;
+  const onlineTrackId = `online_${item.source}_${item.id}`;
+  const savedTrackId = savedTrack?.id;
+
+  const isCurrentTrack = usePlayerStore((state) => {
+    const curId = state.currentTrack?.id;
+    if (!curId) return false;
+    return (
+      (savedTrackId !== undefined && curId === savedTrackId) ||
+      curId === streamTrackId ||
+      curId === onlineTrackId
+    );
+  });
+
+  const isCurrentPlaying = usePlayerStore((state) => {
+    const curId = state.currentTrack?.id;
+    if (!curId) return false;
+    const matches =
+      (savedTrackId !== undefined && curId === savedTrackId) ||
+      curId === streamTrackId ||
+      curId === onlineTrackId;
+    return matches ? state.isPlaying : false;
+  });
+
+  const isDownloading = downloadPct !== undefined;
+
+  return (
+    <View
+      style={[
+        styles.resultRow,
+        isCurrentTrack && styles.resultRowActive,
+        !isCurrentTrack && savedTrack && styles.resultRowSaved,
+      ]}
+    >
+      {/* Inner clipped container for background progress and content */}
+      <View style={styles.cardInnerContainer}>
+        {isDownloading && (
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${Math.min(100, Math.max(0, downloadPct))}%`,
+                backgroundColor: theme.primary + '22',
+              },
+            ]}
+          />
+        )}
+
+        {/* Left / Main area: Thumbnail + Title + Artist (tappable for instant streaming / playing) */}
+        <TouchableOpacity
+          style={styles.resultMainArea}
+          onPress={() => onMainPress(item)}
+          activeOpacity={0.7}
+        >
+          {/* Rounded Thumbnail / Logo Icon with resolving spinner overlay */}
+          <View style={styles.thumbnailContainer}>
+            {item.thumbnailUrl ? (
+              <Image
+                source={{ uri: item.thumbnailUrl }}
+                style={styles.thumbnail}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={styles.thumbnailPlaceholder}>
+                <Ionicons
+                  name={isCurrentPlaying ? 'volume-high' : 'musical-note'}
+                  size={20}
+                  color={isCurrentTrack ? theme.primary : theme.textSecondary}
+                />
+              </View>
+            )}
+
+            {/* Subtle loading spinner overlay while resolving online stream */}
+            {isResolving && (
+              <View style={styles.thumbnailOverlay}>
+                <ActivityIndicator size="small" color={theme.primary} />
+              </View>
+            )}
+          </View>
+
+          {/* Track Title & Artist Information */}
+          <View style={styles.resultInfo}>
+            <Text
+              style={[styles.resultTitle, isCurrentTrack && styles.resultTitleActive]}
+              numberOfLines={1}
+            >
+              {item.title}
+            </Text>
+            <View style={styles.resultMetaRow}>
+              <View style={styles.sourceBadge}>
+                <Text style={styles.sourceBadgeText}>{item.source}</Text>
+              </View>
+              <Text
+                style={styles.resultArtist}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {item.artist}
+              </Text>
+              <Text style={styles.resultMetaDot}>•</Text>
+              <View style={styles.durationBadge}>
+                <Text style={styles.durationBadgeText}>{formatDuration(item.duration)}</Text>
+              </View>
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* Right-side Action: Saved Play/Pause, Downloading Progress, or Download Button */}
+        <View style={styles.actionContainer}>
+          {savedTrack ? (
+            <TouchableOpacity
+              style={styles.savedPlayButton}
+              onPress={() => onMainPress(item)}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={isCurrentPlaying ? 'Pause audio' : 'Play audio'}
+            >
+              <Ionicons
+                name={isCurrentPlaying ? 'pause' : 'checkmark'}
+                size={16}
+                color={theme.primary}
+              />
+            </TouchableOpacity>
+          ) : isDownloading ? (
+            <View style={styles.downloadingActionContainer}>
+              <Text style={styles.progressPercentageText}>{downloadPct}%</Text>
+              <TouchableOpacity
+                style={styles.cancelDownloadButton}
+                onPress={() => onCancelDownload(item.id)}
+                activeOpacity={0.7}
+                hitSlop={8}
+                accessibilityLabel="Cancel download"
+              >
+                <Ionicons name="close" size={14} color={theme.textPrimary} />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View
+              ref={(r) => {
+                if (index === 0) {
+                  registerGuideTarget('first_search_download_btn', r);
+                }
+              }}
+              collapsable={false}
+            >
+              <TouchableOpacity
+                style={styles.downloadButton}
+                onPress={() => onDownload(item)}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityLabel="Download track"
+              >
+                <Ionicons
+                  name="cloud-download-outline"
+                  size={18}
+                  color={theme.textPrimary}
+                />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+});
+
 export default function SearchScreen() {
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
-  // Player store bindings
   const offlineTracks = usePlayerStore((state) => state.tracks);
-  const currentTrack = usePlayerStore((state) => state.currentTrack);
-  const isPlaying = usePlayerStore((state) => state.isPlaying);
-  const playTrack = usePlayerStore((state) => state.playTrack);
-  const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
 
   // Theme-adaptive logo for watermark
   const logoSource = useMemo(
@@ -98,7 +295,15 @@ export default function SearchScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [onlineResults, setOnlineResults] = useState<OnlineTrackResult[]>([]);
   const [downloadingMap, setDownloadingMap] = useState<Record<string, number>>({});
+  const downloadingMapRef = useRef(downloadingMap);
+  useEffect(() => {
+    downloadingMapRef.current = downloadingMap;
+  }, [downloadingMap]);
   const [resolvingTrackId, setResolvingTrackId] = useState<string | null>(null);
+  const resolvingTrackIdRef = useRef<string | null>(resolvingTrackId);
+  useEffect(() => {
+    resolvingTrackIdRef.current = resolvingTrackId;
+  }, [resolvingTrackId]);
   const streamTapSeqRef = useRef<number>(0);
 
   // Error modal state
@@ -215,8 +420,6 @@ export default function SearchScreen() {
     }
   }, [demoAction, demoNonce]);
 
-
-
   // Explicit Search submission
   const handleExplicitSearch = async () => {
     const trimmed = query.trim();
@@ -245,166 +448,208 @@ export default function SearchScreen() {
     setIsSearching(false);
   };
 
-  // Find if an online item has already been downloaded to SQLite
+  // O(1) lookup index for downloaded offline tracks
+  const savedTracksIndex = useMemo(() => {
+    const byId = new Map<string, Track>();
+    const byYoutubeId = new Map<string, Track>();
+    const byTitleArtist = new Map<string, Track>();
+
+    for (const t of offlineTracks) {
+      byId.set(t.id, t);
+      if (t.youtube_id) {
+        byYoutubeId.set(t.youtube_id, t);
+      }
+      const key = `${t.title.trim().toLowerCase()}|${t.artist.trim().toLowerCase()}`;
+      if (!byTitleArtist.has(key)) {
+        byTitleArtist.set(key, t);
+      }
+    }
+
+    return { byId, byYoutubeId, byTitleArtist };
+  }, [offlineTracks]);
+
   const findSavedTrack = useCallback(
     (item: OnlineTrackResult): Track | undefined => {
-      return offlineTracks.find((t) => {
-        if (t.id === `online_${item.source}_${item.id}`) return true;
-        if (item.source === 'youtube' && t.youtube_id === item.id) return true;
-        if (
-          t.title.trim().toLowerCase() === item.title.trim().toLowerCase() &&
-          t.artist.trim().toLowerCase() === item.artist.trim().toLowerCase()
-        ) {
-          return true;
-        }
-        return false;
-      });
+      const idMatch = savedTracksIndex.byId.get(`online_${item.source}_${item.id}`);
+      if (idMatch) return idMatch;
+
+      if (item.source === 'youtube') {
+        const ytMatch = savedTracksIndex.byYoutubeId.get(item.id);
+        if (ytMatch) return ytMatch;
+      }
+
+      const key = `${item.title.trim().toLowerCase()}|${item.artist.trim().toLowerCase()}`;
+      return savedTracksIndex.byTitleArtist.get(key);
     },
-    [offlineTracks]
+    [savedTracksIndex]
   );
 
   // Instant stream or play on row tap (Seeds endless Artist Radio)
-  const handleMainPress = async (item: OnlineTrackResult) => {
-    const savedTrack = findSavedTrack(item);
+  const handleMainPress = useCallback(
+    async (item: OnlineTrackResult) => {
+      const savedTrack = findSavedTrack(item);
+      const { currentTrack, isPlaying, playTrack, togglePlayPause, seekTo } =
+        usePlayerStore.getState();
 
-    if (savedTrack) {
-      // Cancel any in-flight online stream tap when playing a saved offline track
-      streamTapSeqRef.current += 1;
-      setResolvingTrackId(null);
-      // Saved locally: ensure immediate autoplay and seed Artist Radio
-      if (currentTrack?.id === savedTrack.id) {
-        await togglePlayPause();
-      } else {
-        await playTrack(savedTrack, [savedTrack], {
-          type: 'search-radio',
-          name: `${savedTrack.artist || 'Artist'} Radio`,
-        });
-        usePlayerStore.getState().fetchRelatedRadioTracks(savedTrack);
-      }
-      return;
-    }
-
-    // Streaming track: ensure immediate autoplay
-    const streamTrackId = `stream_${item.source}_${item.id}`;
-    if (currentTrack?.id === streamTrackId) {
-      streamTapSeqRef.current += 1;
-      setResolvingTrackId(null);
-      if (!isPlaying) {
-        await togglePlayPause();
-      } else {
-        await usePlayerStore.getState().seekTo(0);
-        await resumeAudio();
-      }
-      return;
-    }
-
-    if (resolvingTrackId === item.id) return;
-    const tapSeq = ++streamTapSeqRef.current;
-    setResolvingTrackId(item.id);
-
-    try {
-      const streamResult = await resolveOnlineStreamUrl(item);
-      if (tapSeq !== streamTapSeqRef.current) return;
-
-      const tempTrack: Track = {
-        id: streamTrackId,
-        user_id: 'local_guest',
-        youtube_id: item.source === 'youtube' ? item.id : null,
-        title: item.title,
-        artist: item.artist,
-        local_audio_uri: streamResult.url,
-        local_artwork_uri: item.thumbnailUrl,
-        duration: item.duration,
-        source: 'youtube',
-        is_synced: 0,
-        created_at: new Date().toISOString(),
-        is_streaming: true,
-        headers: streamResult.headers,
-      };
-
-      await playTrack(tempTrack, [tempTrack], {
-        type: 'search-radio',
-        name: `${item.artist || 'Artist'} Radio`,
-      });
-      if (tapSeq !== streamTapSeqRef.current) return;
-      usePlayerStore.getState().fetchRelatedRadioTracks(tempTrack);
-    } catch (err: any) {
-      if (tapSeq !== streamTapSeqRef.current) return;
-      setModalConfig({
-        visible: true,
-        title: 'Streaming Error',
-        message:
-          err?.message ||
-          'Failed to resolve online audio stream for playback. Please check your connection.',
-        icon: 'alert-circle-outline',
-      });
-    } finally {
-      if (tapSeq === streamTapSeqRef.current) {
+      if (savedTrack) {
+        // Cancel any in-flight online stream tap when playing a saved offline track
+        streamTapSeqRef.current += 1;
         setResolvingTrackId(null);
+        // Saved locally: immediate optimistic play and deferred Artist Radio seeding
+        if (currentTrack?.id === savedTrack.id) {
+          await togglePlayPause();
+        } else {
+          await playTrack(savedTrack, [savedTrack], {
+            type: 'search-radio',
+            name: `${savedTrack.artist || 'Artist'} Radio`,
+          });
+          runAfterCurrentFrame(() => {
+            usePlayerStore
+              .getState()
+              .fetchRelatedRadioTracks(savedTrack)
+              .catch(() => {});
+          });
+        }
+        return;
       }
-    }
-  };
 
-  // Trigger audio download for offline library
-  const handleDownload = useCallback(
-    async (track: OnlineTrackResult) => {
-      if (downloadingMap[track.id] !== undefined) return; // already in progress
+      // Streaming track: ensure immediate autoplay
+      const streamTrackId = `stream_${item.source}_${item.id}`;
+      if (currentTrack?.id === streamTrackId) {
+        streamTapSeqRef.current += 1;
+        setResolvingTrackId(null);
+        if (!isPlaying) {
+          await togglePlayPause();
+        } else {
+          await seekTo(0);
+          await resumeAudio();
+        }
+        return;
+      }
 
-      setDownloadingMap((prev) => ({ ...prev, [track.id]: 0 }));
+      if (resolvingTrackIdRef.current === item.id) return;
+      const tapSeq = ++streamTapSeqRef.current;
+      setResolvingTrackId(item.id);
 
       try {
-        await downloadTrackToOfflineLibrary(track, (pct) => {
-          setDownloadingMap((prev) => ({ ...prev, [track.id]: pct }));
-          const guideState = useGuideStore.getState();
-          if (guideState.isOpen && guideState.currentStep === 3) {
-            guideState.setDemoDownloadProgress(Math.min(99, Math.round(pct)));
-          }
+        const tempTrack: Track = {
+          id: streamTrackId,
+          user_id: 'local_guest',
+          youtube_id: item.source === 'youtube' ? item.id : null,
+          title: item.title,
+          artist: item.artist,
+          local_audio_uri: item.source === 'audius' ? item.downloadUrl || '' : '',
+          local_artwork_uri: item.thumbnailUrl,
+          duration: item.duration,
+          source: 'youtube',
+          is_synced: 0,
+          created_at: new Date().toISOString(),
+          is_streaming: true,
+        };
+
+        // Optimistically update MiniPlayer / NowPlaying before stream resolution completes
+        await playTrack(tempTrack, [tempTrack], {
+          type: 'search-radio',
+          name: `${item.artist || 'Artist'} Radio`,
         });
 
-        // Walkthrough Step 4: When download completes, update playerStore tracks
-        // and mark demo download done so Step 4's Next button is enabled
-        const guideState = useGuideStore.getState();
-        if (guideState.isOpen && guideState.currentStep === 3) {
-          try {
-            const allTracks = await getAllTracks();
-            const sorted = [...allTracks].sort((a, b) => {
-              const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
-              const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
-              return timeB - timeA;
-            });
-            usePlayerStore.getState().setTracks(sorted);
-            await setSetting('library_sort', 'last_download');
-          } catch (sortErr) {
-            console.warn('Failed to sort tracks on guide completion:', sortErr);
-          }
+        if (tapSeq !== streamTapSeqRef.current) return;
 
-          guideState.setDemoDownloadProgress(100);
-          guideState.setDemoDownloadStatus('done');
+        const resolvedTrack = usePlayerStore.getState().currentTrack;
+        if (resolvedTrack?.id === streamTrackId && !resolvedTrack.local_audio_uri) {
+          setModalConfig({
+            visible: true,
+            title: 'Streaming Error',
+            message:
+              'Failed to resolve online audio stream for playback. Please check your connection.',
+            icon: 'alert-circle-outline',
+          });
+          return;
         }
-      } catch (error: any) {
-        const guideState = useGuideStore.getState();
-        if (guideState.isOpen && guideState.currentStep === 3) {
-          guideState.setDemoDownloadStatus('error');
-        }
+
+        runAfterCurrentFrame(() => {
+          if (tapSeq !== streamTapSeqRef.current) return;
+          usePlayerStore
+            .getState()
+            .fetchRelatedRadioTracks(resolvedTrack || tempTrack)
+            .catch(() => {});
+        });
+      } catch (err: any) {
+        if (tapSeq !== streamTapSeqRef.current) return;
         setModalConfig({
           visible: true,
-          title: 'Download Failed',
-          message: error?.message || 'Failed to download the selected audio file. Please try again.',
-          icon: 'cloud-offline-outline',
+          title: 'Streaming Error',
+          message:
+            err?.message ||
+            'Failed to resolve online audio stream for playback. Please check your connection.',
+          icon: 'alert-circle-outline',
         });
       } finally {
-        setDownloadingMap((prev) => {
-          const next = { ...prev };
-          delete next[track.id];
-          return next;
-        });
+        if (tapSeq === streamTapSeqRef.current) {
+          setResolvingTrackId(null);
+        }
       }
     },
-    [downloadingMap]
+    [findSavedTrack]
   );
 
+  // Trigger audio download for offline library
+  const handleDownload = useCallback(async (track: OnlineTrackResult) => {
+    if (downloadingMapRef.current[track.id] !== undefined) return; // already in progress
+
+    setDownloadingMap((prev) => ({ ...prev, [track.id]: 0 }));
+
+    try {
+      await downloadTrackToOfflineLibrary(track, (pct) => {
+        setDownloadingMap((prev) => ({ ...prev, [track.id]: pct }));
+        const guideState = useGuideStore.getState();
+        if (guideState.isOpen && guideState.currentStep === 3) {
+          guideState.setDemoDownloadProgress(Math.min(99, Math.round(pct)));
+        }
+      });
+
+      // Walkthrough Step 4: When download completes, update playerStore tracks
+      // and mark demo download done so Step 4's Next button is enabled
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 3) {
+        try {
+          const allTracks = await getAllTracks();
+          const sorted = [...allTracks].sort((a, b) => {
+            const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+            const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+            return timeB - timeA;
+          });
+          usePlayerStore.getState().setTracks(sorted);
+          await setSetting('library_sort', 'last_download');
+        } catch (sortErr) {
+          console.warn('Failed to sort tracks on guide completion:', sortErr);
+        }
+
+        guideState.setDemoDownloadProgress(100);
+        guideState.setDemoDownloadStatus('done');
+      }
+    } catch (error: any) {
+      const guideState = useGuideStore.getState();
+      if (guideState.isOpen && guideState.currentStep === 3) {
+        guideState.setDemoDownloadStatus('error');
+      }
+      setModalConfig({
+        visible: true,
+        title: 'Download Failed',
+        message: error?.message || 'Failed to download the selected audio file. Please try again.',
+        icon: 'cloud-offline-outline',
+      });
+    } finally {
+      setDownloadingMap((prev) => {
+        const next = { ...prev };
+        delete next[track.id];
+        return next;
+      });
+    }
+  }, []);
+
   // Cancel an in-progress track download
-  const handleCancelDownload = async (trackId: string) => {
+  const handleCancelDownload = useCallback(async (trackId: string) => {
     try {
       await cancelTrackDownload(trackId);
     } catch (err) {
@@ -416,7 +661,7 @@ export default function SearchScreen() {
         return next;
       });
     }
-  };
+  }, []);
 
   // Demo Walkthrough Automation: Step 4 trigger download
   useEffect(() => {
@@ -449,7 +694,7 @@ export default function SearchScreen() {
             return;
           }
 
-          const isDownloading = downloadingMap[target.id] !== undefined;
+          const isDownloading = downloadingMapRef.current[target.id] !== undefined;
           if (!isDownloading) {
             useGuideStore.getState().setDemoDownloadStatus('downloading');
             useGuideStore.getState().setDemoDownloadProgress(0);
@@ -462,166 +707,35 @@ export default function SearchScreen() {
 
       triggerDemoDownload();
     }
-  }, [demoAction, demoNonce, onlineResults, findSavedTrack, downloadingMap, handleDownload]);
+  }, [demoAction, demoNonce, onlineResults, findSavedTrack, handleDownload]);
 
   // Render individual online track result row
-  const renderOnlineTrackItem = ({
-    item,
-    index,
-  }: {
-    item: OnlineTrackResult;
-    index: number;
-  }) => {
-    const savedTrack = findSavedTrack(item);
-    const streamTrackId = `stream_${item.source}_${item.id}`;
-    const isCurrentTrack =
-      (savedTrack && currentTrack?.id === savedTrack.id) ||
-      currentTrack?.id === streamTrackId ||
-      currentTrack?.id === `online_${item.source}_${item.id}`;
-    const isCurrentPlaying = isCurrentTrack && isPlaying;
-    const downloadPct = downloadingMap[item.id];
-    const isDownloading = downloadPct !== undefined;
-    const isResolving = resolvingTrackId === item.id;
-
-    return (
-      <View
-        style={[
-          styles.resultRow,
-          isCurrentTrack && styles.resultRowActive,
-          !isCurrentTrack && savedTrack && styles.resultRowSaved,
-        ]}
-      >
-        {/* Inner clipped container for background progress and content */}
-        <View style={styles.cardInnerContainer}>
-          {isDownloading && (
-            <View
-              style={[
-                styles.progressFill,
-                {
-                  width: `${Math.min(100, Math.max(0, downloadPct))}%`,
-                  backgroundColor: theme.primary + '22',
-                },
-              ]}
-            />
-          )}
-
-          {/* Left / Main area: Thumbnail + Title + Artist (tappable for instant streaming / playing) */}
-          <TouchableOpacity
-            style={styles.resultMainArea}
-            onPress={() => handleMainPress(item)}
-            activeOpacity={0.7}
-          >
-            {/* Rounded Thumbnail / Logo Icon with resolving spinner overlay */}
-            <View style={styles.thumbnailContainer}>
-              {item.thumbnailUrl ? (
-                <Image
-                  source={{ uri: item.thumbnailUrl }}
-                  style={styles.thumbnail}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={styles.thumbnailPlaceholder}>
-                  <Ionicons
-                    name={isCurrentPlaying ? 'volume-high' : 'musical-note'}
-                    size={20}
-                    color={isCurrentTrack ? theme.primary : theme.textSecondary}
-                  />
-                </View>
-              )}
-
-              {/* Subtle loading spinner overlay while resolving online stream */}
-              {isResolving && (
-                <View style={styles.thumbnailOverlay}>
-                  <ActivityIndicator size="small" color={theme.primary} />
-                </View>
-              )}
-            </View>
-
-            {/* Track Title & Artist Information */}
-            <View style={styles.resultInfo}>
-              <Text
-                style={[styles.resultTitle, isCurrentTrack && styles.resultTitleActive]}
-                numberOfLines={1}
-              >
-                {item.title}
-              </Text>
-              <View style={styles.resultMetaRow}>
-                <View style={styles.sourceBadge}>
-                  <Text style={styles.sourceBadgeText}>{item.source}</Text>
-                </View>
-                <Text
-                  style={styles.resultArtist}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                >
-                  {item.artist}
-                </Text>
-                <Text style={styles.resultMetaDot}>•</Text>
-                <View style={styles.durationBadge}>
-                  <Text style={styles.durationBadgeText}>{formatDuration(item.duration)}</Text>
-                </View>
-              </View>
-            </View>
-          </TouchableOpacity>
-
-          {/* Right-side Action: Saved Play/Pause, Downloading Progress, or Download Button */}
-          <View style={styles.actionContainer}>
-            {savedTrack ? (
-              <TouchableOpacity
-                style={styles.savedPlayButton}
-                onPress={() => handleMainPress(item)}
-                activeOpacity={0.7}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                accessibilityLabel={isCurrentPlaying ? "Pause audio" : "Play audio"}
-              >
-                <Ionicons
-                  name={isCurrentPlaying ? "pause" : "checkmark"}
-                  size={16}
-                  color={theme.primary}
-                />
-              </TouchableOpacity>
-            ) : isDownloading ? (
-              <View style={styles.downloadingActionContainer}>
-                <Text style={styles.progressPercentageText}>{downloadPct}%</Text>
-                <TouchableOpacity
-                  style={styles.cancelDownloadButton}
-                  onPress={() => handleCancelDownload(item.id)}
-                  activeOpacity={0.7}
-                  hitSlop={8}
-                  accessibilityLabel="Cancel download"
-                >
-                  <Ionicons name="close" size={14} color={theme.textPrimary} />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View
-                ref={(r) => {
-                  if (index === 0) {
-                    registerGuideTarget('first_search_download_btn', r);
-                  }
-                }}
-                collapsable={false}
-              >
-                <TouchableOpacity
-                  style={styles.downloadButton}
-                  onPress={() => handleDownload(item)}
-                  activeOpacity={0.7}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  accessibilityLabel="Download track"
-                >
-                  <Ionicons
-                    name="cloud-download-outline"
-                    size={18}
-                    color={theme.textPrimary}
-                  />
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        </View>
-      </View>
-    );
-  };
+  const renderOnlineTrackItem = useCallback(
+    ({ item, index }: { item: OnlineTrackResult; index: number }) => (
+      <SearchTrackRow
+        item={item}
+        index={index}
+        savedTrack={findSavedTrack(item)}
+        downloadPct={downloadingMap[item.id]}
+        isResolving={resolvingTrackId === item.id}
+        theme={theme}
+        styles={styles}
+        onMainPress={handleMainPress}
+        onDownload={handleDownload}
+        onCancelDownload={handleCancelDownload}
+      />
+    ),
+    [
+      findSavedTrack,
+      downloadingMap,
+      resolvingTrackId,
+      theme,
+      styles,
+      handleMainPress,
+      handleDownload,
+      handleCancelDownload,
+    ]
+  );
 
   const renderEmptyState = () => {
     if (isSearching) {
@@ -716,6 +830,10 @@ export default function SearchScreen() {
         data={displayedOnlineTracks}
         keyExtractor={(item) => `${item.source}_${item.id}`}
         renderItem={renderOnlineTrackItem}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         ListEmptyComponent={renderEmptyState}
         contentContainerStyle={styles.listContent}
         keyboardShouldPersistTaps="handled"

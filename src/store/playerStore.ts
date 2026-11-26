@@ -171,6 +171,16 @@ let lastSeekTarget: number | null = null;
 let lastHandledFinishSession = -1;
 let lastRepeatOneFinishAt = 0;
 
+function runAfterCurrentFrame(fn: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      setTimeout(fn, 0);
+    });
+  } else {
+    setTimeout(fn, 0);
+  }
+}
+
 async function resolveTrackWithOfflineFirst(
   track: Track,
   libraryTracks: Track[]
@@ -183,15 +193,28 @@ async function resolveTrackWithOfflineFirst(
     ) {
       return null;
     }
-    const resolved = await resolveLocalTrackUri(candidate.local_audio_uri);
+    const checkArtwork =
+      Boolean(candidate.local_artwork_uri) &&
+      !candidate.local_artwork_uri!.startsWith('http://') &&
+      !candidate.local_artwork_uri!.startsWith('https://');
+    const [resolved, resolvedArtResult] = await Promise.all([
+      resolveLocalTrackUri(candidate.local_audio_uri),
+      checkArtwork ? resolveLocalTrackUri(candidate.local_artwork_uri) : Promise.resolve(null),
+    ]);
     if (!resolved.exists || !resolved.uri) return null;
-    const resolvedArtResult = candidate.local_artwork_uri
-      ? await resolveLocalTrackUri(candidate.local_artwork_uri)
-      : null;
     const resolvedArtwork =
       resolvedArtResult?.exists && resolvedArtResult.uri
         ? resolvedArtResult.uri
         : track.local_artwork_uri;
+    if (
+      candidate === track &&
+      resolved.uri === track.local_audio_uri &&
+      resolvedArtwork === track.local_artwork_uri &&
+      !track.headers &&
+      !track.is_streaming
+    ) {
+      return track;
+    }
     return {
       ...track,
       local_audio_uri: resolved.uri,
@@ -304,11 +327,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const resolvedQueue = newQueue.some((t) => t.id === track.id)
       ? newQueue
       : [track, ...newQueue];
+    const queueChanged = resolvedQueue !== state.queue;
 
-    // 1. Instant Optimistic Track Selection (0ms UI response)
+    // 1. Instant Optimistic Track Selection (< 50ms UI response on synchronous tick)
     set({
       currentTrack: track,
-      queue: resolvedQueue,
+      ...(queueChanged ? { queue: resolvedQueue } : {}),
       isPlaying: true,
       isLoading: true,
       isBuffering: true,
@@ -403,17 +427,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
-    const updatedQueue = resolvedQueue.map((t) => (t.id === activeTrack.id ? activeTrack : t));
-
-    set({
-      currentTrack: activeTrack,
-      queue: updatedQueue,
-      isLoading: true,
-      isPlaying: true,
-      position: 0,
-      duration: activeTrack.duration || 0,
-      ...(context !== undefined ? { playbackContext: context } : {}),
-    });
+    let activeQueue = resolvedQueue;
+    if (activeTrack !== track) {
+      const idx = resolvedQueue.findIndex((t) => t.id === activeTrack.id);
+      if (idx >= 0 && resolvedQueue[idx] !== activeTrack) {
+        activeQueue = resolvedQueue.map((t) => (t.id === activeTrack.id ? activeTrack : t));
+      }
+      set({
+        currentTrack: activeTrack,
+        ...(activeQueue !== resolvedQueue ? { queue: activeQueue } : {}),
+      });
+    }
 
     try {
       const audioSource = activeTrack.headers
@@ -560,21 +584,27 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
               pauseAudio();
               set({ isPlaying: false, isBuffering: false, isLoading: false, position: 0 });
             } else {
-              get().playNext();
+              get()
+                .playNext()
+                .catch((err) => console.warn('[PlayerStore] Auto-advance error:', err));
             }
           }
         },
         activeTrack.headers,
-        metadata
+        metadata,
+        { skipLocalCheck: isLocalReady }
       );
 
       if (session !== playbackSessionId || !player) return;
 
       set({ isPlaying: true, isLoading: false, isBuffering: false });
 
-      // Silently prefetch the next online track only after current track starts cleanly
-      const currTrackIndex = updatedQueue.findIndex((t) => t.id === activeTrack.id);
-      prefetchNextTrackStream(updatedQueue, currTrackIndex);
+      // Defer non-critical background prefetch until after playback interaction settles
+      runAfterCurrentFrame(() => {
+        if (session !== playbackSessionId) return;
+        const currTrackIndex = activeQueue.findIndex((t) => t.id === activeTrack.id);
+        prefetchNextTrackStream(activeQueue, currTrackIndex);
+      });
     } catch (error) {
       if (session !== playbackSessionId) return;
       console.warn('Error playing track:', error);
@@ -637,12 +667,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       nextIndex = currentIndex >= 0 ? (currentIndex + 1) % currentQueue.length : 0;
     }
 
-    // Auto-fetch next batch in 'search-radio' mode when remaining tracks <= 2
+    // Auto-fetch next batch in 'search-radio' mode when remaining tracks <= 2 (deferred)
     if (playbackContext?.type === 'search-radio') {
       const remainingTracks = currentQueue.length - 1 - nextIndex;
       if (remainingTracks <= 2) {
         const seed = currentQueue[nextIndex] || currentTrack;
-        get().fetchRelatedRadioTracks(seed);
+        runAfterCurrentFrame(() => {
+          get()
+            .fetchRelatedRadioTracks(seed)
+            .catch(() => {});
+        });
       }
     }
 

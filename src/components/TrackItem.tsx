@@ -34,7 +34,7 @@ export interface TrackItemProps {
   index?: number;
   totalTracks?: number;
   onMoveTrack?: (fromIndex: number, toIndex: number) => void;
-  onLongPress?: () => void;
+  onLongPress?: (trackId: string) => void;
   onAddToPlaylist?: (track: Track) => void;
   onPlay?: () => void;
   isCurrentTrack?: boolean;
@@ -50,7 +50,7 @@ function formatDuration(seconds: number): string {
 
 const ROW_HEIGHT = 66;
 
-export default function TrackItem({
+const TrackItem = React.memo(function TrackItem({
   track,
   queue,
   playbackContext,
@@ -69,15 +69,15 @@ export default function TrackItem({
   isCurrentTrack,
   isPlaying: isPlayingProp,
 }: TrackItemProps) {
-  const currentTrack = usePlayerStore((state) => state.currentTrack);
-  const isPlayingStore = usePlayerStore((state) => state.isPlaying);
-  const playTrack = usePlayerStore((state) => state.playTrack);
-  const togglePlayPause = usePlayerStore((state) => state.togglePlayPause);
+  const isCurrentFromStore = usePlayerStore((state) => state.currentTrack?.id === track.id);
+  const isPlayingFromStore = usePlayerStore((state) =>
+    state.currentTrack?.id === track.id ? state.isPlaying : false
+  );
   const theme = useThemeStore((state) => state.theme);
 
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const isCurrent = isCurrentTrack !== undefined ? isCurrentTrack : currentTrack?.id === track.id;
-  const activePlaying = isPlayingProp !== undefined ? isPlayingProp : isPlayingStore;
+  const isCurrent = isCurrentTrack !== undefined ? isCurrentTrack : isCurrentFromStore;
+  const activePlaying = isPlayingProp !== undefined ? isPlayingProp : isPlayingFromStore;
   const isCloud =
     !track.local_audio_uri &&
     Boolean(
@@ -113,27 +113,31 @@ export default function TrackItem({
     [index, totalTracks, onMoveTrack]
   );
 
-  const panGesture = Gesture.Pan()
-    .onStart(() => {
-      'worklet';
-      isDragging.value = true;
-      runOnJS(triggerHaptic)();
-    })
-    .onUpdate((event) => {
-      'worklet';
-      translateY.value = event.translationY;
-    })
-    .onEnd((event) => {
-      'worklet';
-      runOnJS(handleDrop)(event.translationY);
-      translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
-      isDragging.value = false;
-    })
-    .onFinalize(() => {
-      'worklet';
-      translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
-      isDragging.value = false;
-    });
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          'worklet';
+          isDragging.value = true;
+          runOnJS(triggerHaptic)();
+        })
+        .onUpdate((event) => {
+          'worklet';
+          translateY.value = event.translationY;
+        })
+        .onEnd((event) => {
+          'worklet';
+          runOnJS(handleDrop)(event.translationY);
+          translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
+          isDragging.value = false;
+        })
+        .onFinalize(() => {
+          'worklet';
+          translateY.value = withSpring(0, { damping: 18, stiffness: 150 });
+          isDragging.value = false;
+        }),
+    [handleDrop, isDragging, translateY, triggerHaptic]
+  );
 
   const animatedRowStyle = useAnimatedStyle(() => {
     return {
@@ -151,13 +155,15 @@ export default function TrackItem({
     };
   });
 
-  const handlePress = () => {
+  const handlePress = useCallback(() => {
     if (selectionMode) {
       onToggleSelect?.(track.id);
       return;
     }
 
     onPlay?.();
+    const { playTrack, togglePlayPause } = usePlayerStore.getState();
+
     if (isUnavailable) {
       const nextPlayable = queue.find(
         (t) => (Boolean(t.local_audio_uri) || Boolean(t.is_streaming)) && t.id !== track.id
@@ -173,7 +179,20 @@ export default function TrackItem({
     } else {
       playTrack(track, queue, playbackContext);
     }
-  };
+  }, [
+    selectionMode,
+    onToggleSelect,
+    track,
+    onPlay,
+    isUnavailable,
+    queue,
+    playbackContext,
+    isCurrent,
+  ]);
+
+  const handleLongPress = useCallback(() => {
+    onLongPress?.(track.id);
+  }, [onLongPress, track.id]);
 
   return (
     <Animated.View style={animatedRowStyle}>
@@ -186,7 +205,7 @@ export default function TrackItem({
         ]}
         activeOpacity={0.7}
         onPress={handlePress}
-        onLongPress={onLongPress}
+        onLongPress={onLongPress ? handleLongPress : undefined}
         delayLongPress={280}
       >
         {/* Selection Checkbox (shown in selection mode) */}
@@ -367,4 +386,6 @@ export default function TrackItem({
       </TouchableOpacity>
     </Animated.View>
   );
-}
+});
+
+export default TrackItem;

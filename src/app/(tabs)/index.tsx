@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { usePlayerStore, preWarmTrackStreams } from '@/store/playerStore';
+import { usePlayerStore, preWarmTrackStreams, type PlaybackContext } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import { useAuthStore } from '@/store/authStore';
 import { scanLocalMusic, pickAndImportAudioFiles } from '@/services/localScannerService';
@@ -60,6 +60,33 @@ type LibraryTab = 'songs' | 'playlists';
 
 export type SortChoice = 'last_download' | 'first_download' | 'title_asc' | 'artist_asc' | 'custom';
 
+const LIBRARY_PLAYBACK_CONTEXT: PlaybackContext = {
+  type: 'library',
+  name: 'Local Offline Tracks',
+};
+
+function areTrackListsEqual(a: Track[], b: Track[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const t1 = a[i];
+    const t2 = b[i];
+    if (
+      t1.id !== t2.id ||
+      t1.local_audio_uri !== t2.local_audio_uri ||
+      t1.local_artwork_uri !== t2.local_artwork_uri ||
+      t1.title !== t2.title ||
+      t1.artist !== t2.artist ||
+      t1.duration !== t2.duration ||
+      t1.sort_order !== t2.sort_order ||
+      t1.is_playlist_only !== t2.is_playlist_only
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function getSortLabel(choice: SortChoice): string {
   switch (choice) {
     case 'last_download':
@@ -98,8 +125,7 @@ export default function LibraryScreen() {
   const reorderTracks = usePlayerStore((state) => state.reorderTracks);
   const removeTrackFromStore = usePlayerStore((state) => state.removeTrack);
   const playTrack = usePlayerStore((state) => state.playTrack);
-  const currentTrack = usePlayerStore((state) => state.currentTrack);
-  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const hasCurrentTrack = usePlayerStore((state) => Boolean(state.currentTrack));
   const authUser = useAuthStore((state) => state.user);
   const isAuthHydrated = useAuthStore((state) => state.isAuthHydrated);
 
@@ -305,8 +331,8 @@ export default function LibraryScreen() {
   });
 
   const listBottomPadding = useMemo(() => {
-    return (currentTrack ? 76 : 0) + (selectionMode ? 76 : 0) + 100;
-  }, [currentTrack, selectionMode]);
+    return (hasCurrentTrack ? 76 : 0) + (selectionMode ? 76 : 0) + 100;
+  }, [hasCurrentTrack, selectionMode]);
 
   // Sort helper function
   const applySort = useCallback((list: Track[], choice: SortChoice): Track[] => {
@@ -355,33 +381,7 @@ export default function LibraryScreen() {
     }
   }, [scanMessage]);
 
-  // Initial load (wait until cached auth user_id is hydrated so UI never flashes 0 tracks)
-  useEffect(() => {
-    if (!isAuthHydrated) return;
-    let isMounted = true;
-    (async () => {
-      try {
-        const [stored, savedSortRaw, storedPlaylists] = await Promise.all([
-          getAllTracks(authUserId),
-          getSetting('library_sort'),
-          getAllPlaylists(authUserId),
-        ]);
-        const savedSort = (savedSortRaw as SortChoice) || 'last_download';
-        if (isMounted) {
-          setSortChoice(savedSort);
-          setTracks(savedSort !== 'custom' ? applySort(stored, savedSort) : stored);
-          setPlaylists(storedPlaylists);
-        }
-      } catch (error) {
-        console.warn('Failed to load tracks from DB:', error);
-      }
-    })();
-    return () => {
-      isMounted = false;
-    };
-  }, [isAuthHydrated, authUserId, setTracks, applySort]);
-
-  // Refresh library and maintain Last Download sort order when returning to Library tab
+  // Refresh library and maintain Last Download sort order on mount and when returning to Library tab
   useFocusEffect(
     useCallback(() => {
       if (!isAuthHydrated) return;
@@ -394,9 +394,12 @@ export default function LibraryScreen() {
             getAllPlaylists(authUserId),
           ]);
           const savedSort = (savedSortRaw as SortChoice) || 'last_download';
+          const nextTracks = savedSort !== 'custom' ? applySort(stored, savedSort) : stored;
           if (isMounted) {
             setSortChoice(savedSort);
-            setTracks(savedSort !== 'custom' ? applySort(stored, savedSort) : stored);
+            if (!areTrackListsEqual(usePlayerStore.getState().tracks, nextTracks)) {
+              setTracks(nextTracks);
+            }
             setPlaylists(storedPlaylists);
           }
         } catch (e) {
@@ -425,78 +428,93 @@ export default function LibraryScreen() {
       if (Platform.OS !== 'android') return;
 
       const onBackPress = () => {
-        // 1. If any modal or open sheet is visible, dismiss it first
-        if (showAddMusicModal) {
-          setShowAddMusicModal(false);
-          return true;
-        }
-        if (showSortModal) {
-          setShowSortModal(false);
-          return true;
-        }
-        if (showAddSongsToPlaylistModal) {
-          setShowAddSongsToPlaylistModal(false);
-          return true;
-        }
-        if (showBatchAddToPlaylistModal) {
-          setShowBatchAddToPlaylistModal(false);
-          return true;
-        }
-        if (showCreateModal) {
-          setShowCreateModal(false);
-          return true;
-        }
-        if (showEditNameModal) {
-          setShowEditNameModal(false);
-          return true;
-        }
-        if (showImportModal) {
-          setShowImportModal(false);
-          return true;
-        }
-        if (showPlaylistCoverActionModal) {
-          setShowPlaylistCoverActionModal(false);
-          return true;
-        }
-        if (showPlaylistMenuModal) {
-          setShowPlaylistMenuModal(false);
-          return true;
-        }
-        if (trackToAddToPlaylist) {
-          setTrackToAddToPlaylist(null);
-          return true;
-        }
-        if (confirmConfig.visible) {
-          setConfirmConfig((prev) => ({ ...prev, visible: false }));
-          return true;
-        }
-        if (selectionMode) {
-          setSelectionMode(false);
-          setSelectedTrackIds(new Set());
-          return true;
-        }
-        if (selectedPlaylist) {
-          setSelectedPlaylist(null);
-          return true;
-        }
-        const guideState = useGuideStore.getState();
-        if (guideState.isOpen) {
-          guideState.closeGuide();
-          return true;
-        }
-        const playerState = usePlayerStore.getState();
-        if (playerState.isModalOpen) {
-          playerState.setModalOpen(false);
-          return true;
-        }
+        try {
+          // 1. If any modal or open sheet is visible, dismiss it first
+          if (showAddMusicModal) {
+            setShowAddMusicModal(false);
+            return true;
+          }
+          if (showSortModal) {
+            setShowSortModal(false);
+            return true;
+          }
+          if (showAddSongsToPlaylistModal) {
+            setShowAddSongsToPlaylistModal(false);
+            return true;
+          }
+          if (showBatchAddToPlaylistModal) {
+            setShowBatchAddToPlaylistModal(false);
+            return true;
+          }
+          if (showCreateModal) {
+            setShowCreateModal(false);
+            return true;
+          }
+          if (showEditNameModal) {
+            setShowEditNameModal(false);
+            return true;
+          }
+          if (showImportModal) {
+            setShowImportModal(false);
+            return true;
+          }
+          if (showPlaylistCoverActionModal) {
+            setShowPlaylistCoverActionModal(false);
+            return true;
+          }
+          if (showPlaylistMenuModal) {
+            setShowPlaylistMenuModal(false);
+            return true;
+          }
+          if (trackToAddToPlaylist) {
+            setTrackToAddToPlaylist(null);
+            return true;
+          }
+          if (confirmConfig.visible) {
+            setConfirmConfig((prev) => ({ ...prev, visible: false }));
+            return true;
+          }
+          if (selectionMode) {
+            setSelectionMode(false);
+            setSelectedTrackIds(new Set());
+            return true;
+          }
+          if (selectedPlaylist) {
+            setSelectedPlaylist(null);
+            return true;
+          }
+          const guideState = useGuideStore.getState();
+          if (guideState.isOpen) {
+            guideState.closeGuide();
+            return true;
+          }
+          const playerState = usePlayerStore.getState();
+          if (playerState.isModalOpen) {
+            playerState.setModalOpen(false);
+            return true;
+          }
 
-        // 2. When at the root Library view with no open modals, cleanly exit app
-        BackHandler.exitApp();
-        return true;
+          // 2. When at the root Library view with no open modals, cleanly exit app
+          try {
+            BackHandler.exitApp();
+          } catch (exitErr) {
+            console.warn('[Library] BackHandler.exitApp error:', exitErr);
+          }
+          return true;
+        } catch (err) {
+          console.warn('[Library] Hardware back press error:', err);
+          return false;
+        }
       };
 
       const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-      return () => subscription.remove();
+      return () => {
+        try {
+          subscription?.remove?.();
+        } catch {
+          // ignore
+        }
+      };
     }, [
       showAddMusicModal,
       showSortModal,
@@ -605,15 +623,18 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleDeleteTrack = async (id: string) => {
-    try {
-      await removeTrackFromDb(id);
-      await removeTrackFromStore(id);
-      await loadPlaylists();
-    } catch (error) {
-      console.warn('Failed to delete track:', error);
-    }
-  };
+  const handleDeleteTrack = useCallback(
+    async (id: string) => {
+      try {
+        await removeTrackFromDb(id);
+        await removeTrackFromStore(id);
+        await loadPlaylists();
+      } catch (error) {
+        console.warn('Failed to delete track:', error);
+      }
+    },
+    [removeTrackFromStore, loadPlaylists]
+  );
 
   const handleSelectSort = async (choice: SortChoice) => {
     setSortChoice(choice);
@@ -628,45 +649,52 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleMoveTrack = async (fromIndex: number, toIndex: number) => {
-    if (
-      fromIndex < 0 ||
-      toIndex < 0 ||
-      fromIndex >= tracks.length ||
-      toIndex >= tracks.length ||
-      fromIndex === toIndex
-    )
-      return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const updated = [...tracks];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    setTracks(updated);
-    setSortChoice('custom');
-    await setSetting('library_sort', 'custom');
-    await reorderTracks(updated);
-  };
+  const handleMoveTrack = useCallback(
+    async (fromIndex: number, toIndex: number) => {
+      const currentTracks = usePlayerStore.getState().tracks;
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= currentTracks.length ||
+        toIndex >= currentTracks.length ||
+        fromIndex === toIndex
+      )
+        return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const updated = [...currentTracks];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      setTracks(updated);
+      setSortChoice('custom');
+      await setSetting('library_sort', 'custom');
+      await reorderTracks(updated);
+    },
+    [setTracks, reorderTracks]
+  );
 
-  const handleMovePlaylistTrack = async (fromIndex: number, toIndex: number) => {
-    if (
-      !selectedPlaylist ||
-      fromIndex < 0 ||
-      toIndex < 0 ||
-      fromIndex >= selectedPlaylistTracks.length ||
-      toIndex >= selectedPlaylistTracks.length ||
-      fromIndex === toIndex
-    )
-      return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const updated = [...selectedPlaylistTracks];
-    const [moved] = updated.splice(fromIndex, 1);
-    updated.splice(toIndex, 0, moved);
-    setSelectedPlaylistTracks(updated);
-    await reorderPlaylistTracks(selectedPlaylist.id, updated.map((t) => t.id));
-    if (selectedPlaylist.share_code) {
-      syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
-    }
-  };
+  const handleMovePlaylistTrack = useCallback(
+    async (fromIndex: number, toIndex: number) => {
+      if (
+        !selectedPlaylist ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= selectedPlaylistTracks.length ||
+        toIndex >= selectedPlaylistTracks.length ||
+        fromIndex === toIndex
+      )
+        return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const updated = [...selectedPlaylistTracks];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      setSelectedPlaylistTracks(updated);
+      await reorderPlaylistTracks(selectedPlaylist.id, updated.map((t) => t.id));
+      if (selectedPlaylist.share_code) {
+        syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+      }
+    },
+    [selectedPlaylist, selectedPlaylistTracks]
+  );
 
   const handleRowLongPress = useCallback((trackId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -930,21 +958,23 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleRemoveTrackFromCurrentPlaylist = async (trackId: string) => {
-    if (!selectedPlaylist) return;
-    try {
-      await removeTrackFromPlaylist(selectedPlaylist.id, trackId);
-      const updated = selectedPlaylistTracks.filter((t) => t.id !== trackId);
-      setSelectedPlaylistTracks(updated);
-      await loadPlaylists();
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const handleRemoveTrackFromCurrentPlaylist = useCallback(
+    async (trackId: string) => {
+      if (!selectedPlaylist) return;
+      try {
+        await removeTrackFromPlaylist(selectedPlaylist.id, trackId);
+        setSelectedPlaylistTracks((prev) => prev.filter((t) => t.id !== trackId));
+        await loadPlaylists();
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      // Automatically re-sync cloud playlist in background if already shared
-      syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
-    } catch (e) {
-      console.warn('Failed to remove track from playlist:', e);
-    }
-  };
+        // Automatically re-sync cloud playlist in background if already shared
+        syncSharedPlaylistTracks(selectedPlaylist.id).catch(() => {});
+      } catch (e) {
+        console.warn('Failed to remove track from playlist:', e);
+      }
+    },
+    [selectedPlaylist, loadPlaylists]
+  );
 
   const handleDeletePlaylistConfirm = (playlist: Playlist) => {
     const isImported = playlist.is_imported === 1;
@@ -1235,7 +1265,7 @@ export default function LibraryScreen() {
   // Add to Playlist Modal Handlers
   // -------------------------------------------------------------
 
-  const handleOpenAddToPlaylist = async (track: Track) => {
+  const handleOpenAddToPlaylist = useCallback(async (track: Track) => {
     if (!track.youtube_id) {
       return;
     }
@@ -1246,7 +1276,119 @@ export default function LibraryScreen() {
     } catch (e) {
       console.warn('Failed to get playlists for track:', e);
     }
-  };
+  }, []);
+
+  const handleLibraryTrackPlay = useCallback(() => {
+    const guideState = useGuideStore.getState();
+    if (guideState.isOpen && guideState.currentStep === 4) {
+      guideState.closeGuide();
+    }
+  }, []);
+
+  const playlistPlaybackContext = useMemo<PlaybackContext | undefined>(
+    () =>
+      selectedPlaylist
+        ? { type: 'playlist', name: selectedPlaylist.name }
+        : undefined,
+    [selectedPlaylist]
+  );
+
+  const renderLibraryTrackItem = useCallback(
+    ({ item, index }: { item: Track; index: number }) => {
+      const isHighlighted = highlightedTrackId === item.id;
+      const isSelected = selectedTrackIds.has(item.id);
+      return (
+        <Animated.View
+          ref={(r) => {
+            if (index === 0) registerGuideTarget('first_track_item', r);
+          }}
+          collapsable={false}
+          style={[
+            styles.trackRowContainer,
+            isHighlighted && {
+              borderWidth: 1.5,
+              borderColor: animatedBorderColor,
+              borderRadius: 10,
+              marginHorizontal: 6,
+              marginVertical: 2,
+              backgroundColor: theme.primary + '11',
+            },
+          ]}
+        >
+          <TrackItem
+            track={item}
+            queue={tracks}
+            playbackContext={LIBRARY_PLAYBACK_CONTEXT}
+            onDelete={handleDeleteTrack}
+            selectionMode={selectionMode}
+            isSelected={isSelected}
+            onToggleSelect={handleToggleSelectTrack}
+            index={index}
+            totalTracks={tracks.length}
+            onMoveTrack={handleMoveTrack}
+            onLongPress={handleRowLongPress}
+            onAddToPlaylist={handleOpenAddToPlaylist}
+            onPlay={handleLibraryTrackPlay}
+          />
+        </Animated.View>
+      );
+    },
+    [
+      highlightedTrackId,
+      selectedTrackIds,
+      styles.trackRowContainer,
+      animatedBorderColor,
+      theme.primary,
+      tracks,
+      handleDeleteTrack,
+      selectionMode,
+      handleToggleSelectTrack,
+      handleMoveTrack,
+      handleRowLongPress,
+      handleOpenAddToPlaylist,
+      handleLibraryTrackPlay,
+    ]
+  );
+
+  const renderPlaylistTrackItem = useCallback(
+    ({ item, index }: { item: Track; index: number }) => (
+      <TrackItem
+        track={item}
+        queue={filteredPlaylistTracks}
+        playbackContext={playlistPlaybackContext}
+        onDelete={isSelectedPlaylistImported ? undefined : handleRemoveTrackFromCurrentPlaylist}
+        selectionMode={selectionMode}
+        isSelected={selectedTrackIds.has(item.id)}
+        onToggleSelect={handleToggleSelectTrack}
+        index={index}
+        totalTracks={filteredPlaylistTracks.length}
+        onMoveTrack={
+          isSelectedPlaylistImported || playlistFilterQuery.trim()
+            ? undefined
+            : handleMovePlaylistTrack
+        }
+        onLongPress={
+          isSelectedPlaylistImported || playlistFilterQuery.trim()
+            ? undefined
+            : handleRowLongPress
+        }
+        onAddToPlaylist={handleOpenAddToPlaylist}
+      />
+    ),
+    [
+      filteredPlaylistTracks,
+      playlistPlaybackContext,
+      isSelectedPlaylistImported,
+      handleRemoveTrackFromCurrentPlaylist,
+      selectionMode,
+      selectedTrackIds,
+      handleToggleSelectTrack,
+      playlistFilterQuery,
+      handleMovePlaylistTrack,
+      handleRowLongPress,
+      handleOpenAddToPlaylist,
+    ]
+  );
 
   const handleToggleTrackInPlaylist = async (playlistId: string) => {
     if (!trackToAddToPlaylist) return;
@@ -1602,24 +1744,11 @@ export default function LibraryScreen() {
           <FlatList
             data={filteredPlaylistTracks}
             keyExtractor={(item) => item.id}
-            renderItem={({ item, index }) => (
-              <TrackItem
-                track={item}
-                queue={filteredPlaylistTracks}
-                playbackContext={{ type: 'playlist', name: selectedPlaylist.name }}
-                isCurrentTrack={currentTrack?.id === item.id}
-                isPlaying={isPlaying}
-                onDelete={isImported ? undefined : handleRemoveTrackFromCurrentPlaylist}
-                selectionMode={selectionMode}
-                isSelected={selectedTrackIds.has(item.id)}
-                onToggleSelect={handleToggleSelectTrack}
-                index={index}
-                totalTracks={filteredPlaylistTracks.length}
-                onMoveTrack={isImported || playlistFilterQuery.trim() ? undefined : handleMovePlaylistTrack}
-                onLongPress={isImported || playlistFilterQuery.trim() ? undefined : () => handleRowLongPress(item.id)}
-                onAddToPlaylist={handleOpenAddToPlaylist}
-              />
-            )}
+            renderItem={renderPlaylistTrackItem}
+            initialNumToRender={12}
+            maxToRenderPerBatch={10}
+            windowSize={7}
+            removeClippedSubviews={Platform.OS === 'android' && !selectionMode}
             ListEmptyComponent={
               isLoadingPlaylistTracks ? (
                 <View style={styles.emptyContainer}>
@@ -1802,52 +1931,11 @@ export default function LibraryScreen() {
         <FlatList
           data={tracks}
           keyExtractor={(item) => item.id}
-          renderItem={({ item, index }) => {
-            const isHighlighted = highlightedTrackId === item.id;
-            const isSelected = selectedTrackIds.has(item.id);
-            return (
-              <Animated.View
-                ref={(r) => {
-                  if (index === 0) registerGuideTarget('first_track_item', r);
-                }}
-                collapsable={false}
-                style={[
-                  styles.trackRowContainer,
-                  isHighlighted && {
-                    borderWidth: 1.5,
-                    borderColor: animatedBorderColor,
-                    borderRadius: 10,
-                    marginHorizontal: 6,
-                    marginVertical: 2,
-                    backgroundColor: theme.primary + '11',
-                  },
-                ]}
-              >
-                <TrackItem
-                  track={item}
-                  queue={tracks}
-                  playbackContext={{ type: 'library', name: 'Local Offline Tracks' }}
-                  isCurrentTrack={currentTrack?.id === item.id}
-                  isPlaying={isPlaying}
-                  onDelete={handleDeleteTrack}
-                  selectionMode={selectionMode}
-                  isSelected={isSelected}
-                  onToggleSelect={handleToggleSelectTrack}
-                  index={index}
-                  totalTracks={tracks.length}
-                  onMoveTrack={handleMoveTrack}
-                  onLongPress={() => handleRowLongPress(item.id)}
-                  onAddToPlaylist={handleOpenAddToPlaylist}
-                  onPlay={() => {
-                    const guideState = useGuideStore.getState();
-                    if (guideState.isOpen && guideState.currentStep === 4) {
-                      guideState.closeGuide();
-                    }
-                  }}
-                />
-              </Animated.View>
-            );
-          }}
+          renderItem={renderLibraryTrackItem}
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android' && !selectionMode}
           ListEmptyComponent={renderEmptySongsState}
           contentContainerStyle={[styles.listContent, { paddingBottom: listBottomPadding }]}
           showsVerticalScrollIndicator={false}
@@ -1862,7 +1950,7 @@ export default function LibraryScreen() {
           style={[
             styles.floatingActionBar,
             {
-              bottom: currentTrack
+              bottom: hasCurrentTrack
                 ? Platform.OS === 'ios'
                   ? 154
                   : 130
@@ -1955,7 +2043,7 @@ export default function LibraryScreen() {
           style={[
             styles.floatingActionBar,
             {
-              bottom: currentTrack
+              bottom: hasCurrentTrack
                 ? Platform.OS === 'ios'
                   ? 154
                   : 130

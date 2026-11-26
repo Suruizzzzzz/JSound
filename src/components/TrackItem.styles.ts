@@ -1,8 +1,10 @@
 import { StyleSheet } from 'react-native';
 import { ThemeColors } from '@/constants/theme';
 
-export const createStyles = (theme: ThemeColors) =>
-  StyleSheet.create({
+const styleCache = new WeakMap<ThemeColors, ReturnType<typeof buildStyles>>();
+
+function buildStyles(theme: ThemeColors) {
+  return StyleSheet.create({
     container: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -157,3 +159,12 @@ export const createStyles = (theme: ThemeColors) =>
       color: theme.primary,
     },
   });
+}
+
+export const createStyles = (theme: ThemeColors) => {
+  const cached = styleCache.get(theme);
+  if (cached) return cached;
+  const styles = buildStyles(theme);
+  styleCache.set(theme, styles);
+  return styles;
+};
