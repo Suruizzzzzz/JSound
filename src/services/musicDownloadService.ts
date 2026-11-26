@@ -123,9 +123,11 @@ export async function verifyStreamUrl(
   headers?: Record<string, string>
 ): Promise<boolean> {
   if (!url || typeof url !== 'string') return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let t2: ReturnType<typeof setTimeout> | undefined;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const reqHeaders: Record<string, string> = {
       'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
@@ -140,14 +142,13 @@ export async function verifyStreamUrl(
     });
 
     if (res.ok || res.status === 200 || res.status === 206) {
-      clearTimeout(timer);
       return true;
     }
 
     // Some servers reject HEAD with 403 or 405 Method Not Allowed; retry with lightweight Range GET
     if (res.status === 405 || res.status === 403 || !res.ok) {
       const c2 = new AbortController();
-      const t2 = setTimeout(() => c2.abort(), timeoutMs);
+      t2 = setTimeout(() => c2.abort(), timeoutMs);
       res = await fetch(url, {
         method: 'GET',
         headers: {
@@ -156,17 +157,17 @@ export async function verifyStreamUrl(
         },
         signal: c2.signal,
       });
-      clearTimeout(t2);
       if (res.ok || res.status === 200 || res.status === 206) {
-        clearTimeout(timer);
         return true;
       }
     }
 
-    clearTimeout(timer);
     return false;
   } catch {
     return false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (t2 !== undefined) clearTimeout(t2);
   }
 }
 
@@ -501,12 +502,13 @@ export async function getRelatedOnlineTracks(
  */
 export async function resolveOnlineStreamUrl(
   track: OnlineTrackResult,
-  options?: { verify?: boolean }
+  options?: { verify?: boolean; excludedUrls?: Set<string> }
 ): Promise<ResolvedStreamResult> {
   const youtubeHeaders: Record<string, string> = {
     'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
   };
   const shouldVerify = Boolean(options?.verify);
+  const excludedUrls = options?.excludedUrls;
 
   if (track.source === 'youtube') {
     // -------------------------------------------------------------
@@ -553,7 +555,7 @@ export async function resolveOnlineStreamUrl(
                 }
               }
 
-              if (candidateUrl) {
+              if (candidateUrl && !excludedUrls?.has(candidateUrl)) {
                 if (shouldVerify) {
                   const isPlayable = await verifyStreamUrl(candidateUrl, 3500, youtubeHeaders);
                   if (!isPlayable) continue;
@@ -584,7 +586,7 @@ export async function resolveOnlineStreamUrl(
               }
             }
 
-            if (candidateUrl) {
+            if (candidateUrl && !excludedUrls?.has(candidateUrl)) {
               if (shouldVerify) {
                 const isPlayable = await verifyStreamUrl(candidateUrl, 3500, youtubeHeaders);
                 if (!isPlayable) continue;
@@ -641,13 +643,19 @@ export async function resolveOnlineStreamUrl(
                   track.id
                 )}&itag=${bestFormat.itag}&local=true`;
 
-                const isPlayable = await verifyStreamUrl(proxyUrl, 3500, youtubeHeaders);
-                if (isPlayable) {
-                  return { url: proxyUrl, headers: youtubeHeaders };
+                if (!excludedUrls?.has(proxyUrl)) {
+                  const isPlayable = await verifyStreamUrl(proxyUrl, 3500, youtubeHeaders);
+                  if (isPlayable) {
+                    return { url: proxyUrl, headers: youtubeHeaders };
+                  }
                 }
               }
 
-              if (bestFormat.url && !bestFormat.url.includes('googlevideo.com')) {
+              if (
+                bestFormat.url &&
+                !bestFormat.url.includes('googlevideo.com') &&
+                !excludedUrls?.has(bestFormat.url)
+              ) {
                 const isPlayable = await verifyStreamUrl(bestFormat.url, 3500, youtubeHeaders);
                 if (isPlayable) {
                   return { url: bestFormat.url, headers: youtubeHeaders };
@@ -669,12 +677,18 @@ export async function resolveOnlineStreamUrl(
               const proxyUrl = `${instance}/latest_version?id=${encodeURIComponent(
                 track.id
               )}&itag=${progFormat.itag}&local=true`;
-              const isPlayable = await verifyStreamUrl(proxyUrl, 3500, youtubeHeaders);
-              if (isPlayable) {
-                return { url: proxyUrl, headers: youtubeHeaders };
+              if (!excludedUrls?.has(proxyUrl)) {
+                const isPlayable = await verifyStreamUrl(proxyUrl, 3500, youtubeHeaders);
+                if (isPlayable) {
+                  return { url: proxyUrl, headers: youtubeHeaders };
+                }
               }
             }
-            if (progFormat.url && !progFormat.url.includes('googlevideo.com')) {
+            if (
+              progFormat.url &&
+              !progFormat.url.includes('googlevideo.com') &&
+              !excludedUrls?.has(progFormat.url)
+            ) {
               const isPlayable = await verifyStreamUrl(progFormat.url, 3500, youtubeHeaders);
               if (isPlayable) {
                 return { url: progFormat.url, headers: youtubeHeaders };
@@ -730,13 +744,15 @@ export async function resolveOnlineStreamUrl(
                 }
               }
 
-              const isPlayable = await verifyStreamUrl(
-                streamCandidateUrl,
-                3500,
-                youtubeHeaders
-              );
-              if (isPlayable) {
-                return { url: streamCandidateUrl, headers: youtubeHeaders };
+              if (!excludedUrls?.has(streamCandidateUrl)) {
+                const isPlayable = await verifyStreamUrl(
+                  streamCandidateUrl,
+                  3500,
+                  youtubeHeaders
+                );
+                if (isPlayable) {
+                  return { url: streamCandidateUrl, headers: youtubeHeaders };
+                }
               }
             }
           }
@@ -762,9 +778,11 @@ export async function resolveOnlineStreamUrl(
                 // Keep original
               }
             }
-            const isPlayable = await verifyStreamUrl(streamCandidateUrl, 3500, youtubeHeaders);
-            if (isPlayable) {
-              return { url: streamCandidateUrl, headers: youtubeHeaders };
+            if (!excludedUrls?.has(streamCandidateUrl)) {
+              const isPlayable = await verifyStreamUrl(streamCandidateUrl, 3500, youtubeHeaders);
+              if (isPlayable) {
+                return { url: streamCandidateUrl, headers: youtubeHeaders };
+              }
             }
           }
         }
@@ -777,12 +795,12 @@ export async function resolveOnlineStreamUrl(
     // Tier 4: Audius Title+Artist Match Fallback
     // -------------------------------------------------------------
     const fallbackStream = await resolveAudiusFallbackStream(track.title, track.artist);
-    if (fallbackStream) {
+    if (fallbackStream && !excludedUrls?.has(fallbackStream)) {
       return { url: fallbackStream };
     }
 
     // Tier 5: Direct track downloadUrl if provided
-    if (track.downloadUrl) {
+    if (track.downloadUrl && !excludedUrls?.has(track.downloadUrl)) {
       const isValid = await verifyStreamUrl(track.downloadUrl, 3000);
       if (isValid) {
         return { url: track.downloadUrl };
@@ -794,7 +812,7 @@ export async function resolveOnlineStreamUrl(
     );
   } else {
     // Audius source
-    if (track.downloadUrl) {
+    if (track.downloadUrl && !excludedUrls?.has(track.downloadUrl)) {
       const isValid = await verifyStreamUrl(track.downloadUrl, 3000);
       if (isValid) {
         return { url: track.downloadUrl };
@@ -802,6 +820,19 @@ export async function resolveOnlineStreamUrl(
     }
 
     const defaultUrl = `https://discoveryprovider.audius.co/v1/tracks/${track.id}/stream?app_name=JStream`;
+    if (excludedUrls?.has(defaultUrl)) {
+      throw new Error(
+        `Unable to resolve a playable audio stream for "${track.title}". Please try another track.`
+      );
+    }
+    if (shouldVerify) {
+      const isValid = await verifyStreamUrl(defaultUrl, 3500);
+      if (!isValid) {
+        throw new Error(
+          `Unable to resolve a playable audio stream for "${track.title}". Please try another track.`
+        );
+      }
+    }
     return { url: defaultUrl };
   }
 }
@@ -814,11 +845,13 @@ const activeDownloads = new Map<
     fileUri: string;
   }
 >();
+const cancelledDownloads = new Set<string>();
 
 /**
  * Cancels an in-progress track download and cleans up any partial file on disk.
  */
 export async function cancelTrackDownload(trackId: string): Promise<boolean> {
+  cancelledDownloads.add(trackId);
   const active = activeDownloads.get(trackId);
   if (!active) {
     return false;
@@ -899,94 +932,147 @@ export async function downloadTrackToOfflineLibrary(
   }
 
   if (!finalAudioUri) {
-    let streamResult: ResolvedStreamResult;
-    let ext = '.m4a';
+    cancelledDownloads.delete(track.id);
+    const failedUrls = new Set<string>();
+    const MAX_DOWNLOAD_ATTEMPTS = 3;
+    const STALL_TIMEOUT_MS = 20000;
+    let lastError: Error | null = null;
 
-    try {
-      streamResult = await resolveOnlineStreamUrl(track, { verify: true });
-      if (streamResult.url.includes('.mp3') || streamResult.url.includes('audius.co')) {
-        ext = '.mp3';
-      }
-    } catch (err: any) {
-      throw new Error(err?.message || `Failed to resolve download stream for "${track.title}".`);
-    }
-
-    const { url: streamUrl, headers } = streamResult;
-    const fileUri = `${tracksDir}${baseFileName}${ext}`;
-
-    // Notify initial progress
-    onProgress?.(0);
-
-    const downloadHeaders: Record<string, string> = headers || {
-      'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
-    };
-
-    const downloadResumable = FileSystem.createDownloadResumable(
-      streamUrl,
-      fileUri,
-      {
-        headers: downloadHeaders,
-      },
-      (downloadProgress) => {
-        const totalBytes = downloadProgress.totalBytesExpectedToWrite;
-        const writtenBytes = downloadProgress.totalBytesWritten;
-        if (totalBytes > 0) {
-          const pct = Math.min(100, Math.max(0, Math.round((writtenBytes / totalBytes) * 100)));
-          onProgress?.(pct);
-        }
-      }
-    );
-
-    activeDownloads.set(track.id, { resumable: downloadResumable, fileUri });
-
-    try {
-      const downloadResult = await downloadResumable.downloadAsync();
-      if (!downloadResult || !downloadResult.uri) {
-        throw new Error('Audio download failed. No local URI returned.');
-      }
-      if (
-        typeof downloadResult.status === 'number' &&
-        (downloadResult.status < 200 || downloadResult.status >= 300)
-      ) {
-        try {
-          await FileSystem.deleteAsync(fileUri, { idempotent: true });
-        } catch {
-          // ignore
-        }
-        throw new Error(
-          `Audio download failed with HTTP status ${downloadResult.status}. Please try another track.`
-        );
+    for (let attempt = 0; attempt < MAX_DOWNLOAD_ATTEMPTS; attempt++) {
+      if (cancelledDownloads.has(track.id)) {
+        cancelledDownloads.delete(track.id);
+        throw new Error('Download cancelled.');
       }
 
-      // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
-      const fileInfo = await FileSystem.getInfoAsync(fileUri);
-      if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
-        try {
-          await FileSystem.deleteAsync(fileUri, { idempotent: true });
-        } catch {
-          // ignore
-        }
-        throw new Error(
-          `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes). Please try another track.`
-        );
-      }
-      finalAudioUri = normalizeLocalFileUri(downloadResult.uri) || downloadResult.uri;
-    } catch (err: any) {
-      // If cancelled or failed, ensure partial file is wiped
+      let streamResult: ResolvedStreamResult;
       try {
-        const info = await FileSystem.getInfoAsync(fileUri);
-        if (info.exists) {
-          await FileSystem.deleteAsync(fileUri, { idempotent: true });
-        }
-      } catch {
-        // ignore
+        streamResult = await resolveOnlineStreamUrl(track, {
+          verify: true,
+          excludedUrls: failedUrls,
+        });
+      } catch (err: any) {
+        lastError = new Error(
+          err?.message || `Failed to resolve download stream for "${track.title}".`
+        );
+        break;
       }
-      throw err;
-    } finally {
-      activeDownloads.delete(track.id);
+
+      if (cancelledDownloads.has(track.id)) {
+        cancelledDownloads.delete(track.id);
+        throw new Error('Download cancelled.');
+      }
+
+      const { url: streamUrl, headers } = streamResult;
+      const ext = streamUrl.includes('.mp3') || streamUrl.includes('audius.co') ? '.mp3' : '.m4a';
+      const fileUri = `${tracksDir}${baseFileName}${ext}`;
+
+      onProgress?.(0);
+
+      const downloadHeaders: Record<string, string> = headers || {
+        'User-Agent': YOUTUBE_MOBILE_USER_AGENT,
+      };
+
+      let lastWrittenBytes = -1;
+      let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+      let onWatchdogTimeout: (() => void) | undefined;
+
+      const armWatchdog = () => {
+        if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(() => {
+          onWatchdogTimeout?.();
+        }, STALL_TIMEOUT_MS);
+      };
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        streamUrl,
+        fileUri,
+        {
+          headers: downloadHeaders,
+        },
+        (downloadProgress) => {
+          const totalBytes = downloadProgress.totalBytesExpectedToWrite;
+          const writtenBytes = downloadProgress.totalBytesWritten;
+          if (writtenBytes > lastWrittenBytes) {
+            lastWrittenBytes = writtenBytes;
+            armWatchdog();
+          }
+          if (totalBytes > 0) {
+            const pct = Math.min(100, Math.max(0, Math.round((writtenBytes / totalBytes) * 100)));
+            onProgress?.(pct);
+          }
+        }
+      );
+
+      activeDownloads.set(track.id, { resumable: downloadResumable, fileUri });
+      armWatchdog();
+
+      try {
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          onWatchdogTimeout = () => {
+            downloadResumable.cancelAsync().catch(() => {});
+            reject(new Error(`Audio download stalled after ${STALL_TIMEOUT_MS / 1000}s without progress.`));
+          };
+        });
+
+        const downloadResult = await Promise.race([
+          downloadResumable.downloadAsync(),
+          timeoutPromise,
+        ]);
+
+        if (!downloadResult || !downloadResult.uri) {
+          throw new Error('Audio download failed. No local URI returned.');
+        }
+        if (
+          typeof downloadResult.status === 'number' &&
+          (downloadResult.status < 200 || downloadResult.status >= 300)
+        ) {
+          throw new Error(
+            `Audio download failed with HTTP status ${downloadResult.status}.`
+          );
+        }
+
+        // Verify downloaded audio file existence and size (> 10 KB = 10000 bytes)
+        const fileInfo = await FileSystem.getInfoAsync(fileUri);
+        if (!fileInfo.exists || (fileInfo.size !== undefined && fileInfo.size <= 10000)) {
+          throw new Error(
+            `Audio download failed: received invalid stream or 403 response (${fileInfo.exists ? fileInfo.size : 0} bytes).`
+          );
+        }
+
+        finalAudioUri = normalizeLocalFileUri(downloadResult.uri) || downloadResult.uri;
+        onProgress?.(100);
+        break;
+      } catch (err: any) {
+        try {
+          const info = await FileSystem.getInfoAsync(fileUri);
+          if (info.exists) {
+            await FileSystem.deleteAsync(fileUri, { idempotent: true });
+          }
+        } catch {
+          // ignore
+        }
+
+        if (cancelledDownloads.has(track.id)) {
+          cancelledDownloads.delete(track.id);
+          throw err;
+        }
+
+        failedUrls.add(streamUrl);
+        lastError = err instanceof Error ? err : new Error(String(err || 'Download failed'));
+        console.warn(
+          `[DownloadService] Attempt ${attempt + 1}/${MAX_DOWNLOAD_ATTEMPTS} failed for "${track.title}", retrying fallback:`,
+          lastError.message
+        );
+      } finally {
+        if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+        onWatchdogTimeout = undefined;
+        activeDownloads.delete(track.id);
+      }
     }
 
-    onProgress?.(100);
+    if (!finalAudioUri) {
+      throw lastError || new Error(`Failed to download audio for "${track.title}". Please try another track.`);
+    }
   }
 
   // Optional: save thumbnail locally for offline display (bounded so slow artwork never stalls SQLite save)

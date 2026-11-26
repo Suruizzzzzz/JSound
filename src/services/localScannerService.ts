@@ -1,7 +1,8 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { getActiveUserId } from '@/lib/database';
-import { saveTracks, getAllTracks } from '@/repositories/trackRepository';
+import { saveTracks, getAllTracks, normalizeLocalFileUri } from '@/repositories/trackRepository';
 import { Track } from '@/types/music';
 
 function parseArtistAndTitle(filename: string): { title: string; artist: string } {
@@ -100,27 +101,70 @@ export async function pickAndImportAudioFiles(userId: string = getActiveUserId()
     return getAllTracks(userId);
   }
 
-  const tracks: Track[] = result.assets.map((asset, index) => {
-    const { title, artist } = parseArtistAndTitle(asset.name);
-    const safeId = `imported_${Date.now()}_${index}_${asset.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const docDir = FileSystem.documentDirectory;
+  const tracksDir = docDir
+    ? docDir.endsWith('/')
+      ? `${docDir}jstream_tracks/`
+      : `${docDir}/jstream_tracks/`
+    : null;
+  if (tracksDir) {
+    const dirInfo = await FileSystem.getInfoAsync(tracksDir).catch(() => ({ exists: false }));
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(tracksDir, { intermediates: true });
+    }
+  }
 
-    return {
-      id: safeId,
-      user_id: userId,
-      youtube_id: null,
-      title,
-      artist,
-      local_audio_uri: asset.uri,
-      local_artwork_uri: null,
-      duration: 0,
-      source: 'local',
-      is_synced: 0,
-      created_at: new Date().toISOString(),
-    };
-  });
+  const timestamp = Date.now();
+  const tracks: Track[] = await Promise.all(
+    result.assets.map(async (asset, index) => {
+      const { title, artist } = parseArtistAndTitle(asset.name);
+      const cleanToken = asset.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const safeId = `imported_${timestamp}_${index}_${cleanToken}`;
+
+      let persistedUri = normalizeLocalFileUri(asset.uri) || asset.uri;
+      if (tracksDir && asset.uri) {
+        const extMatch = (asset.name || '').match(/\.([a-zA-Z0-9]+)$/);
+        const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : '.mp3';
+        const stem = (asset.name || 'track')
+          .replace(/\.[^.]+$/, '')
+          .replace(/[^a-zA-Z0-9_\- ]/g, '')
+          .trim()
+          .replace(/\s+/g, '_')
+          .slice(0, 48) || 'track';
+        const targetUri = `${tracksDir}local_${timestamp}_${index}_${stem}${ext}`;
+
+        try {
+          await FileSystem.copyAsync({ from: asset.uri, to: targetUri });
+          const copiedInfo = await FileSystem.getInfoAsync(targetUri);
+          if (copiedInfo.exists) {
+            persistedUri = normalizeLocalFileUri(copiedInfo.uri || targetUri) || targetUri;
+            if (asset.uri !== persistedUri) {
+              FileSystem.deleteAsync(asset.uri, { idempotent: true }).catch(() => {});
+            }
+          }
+        } catch (copyErr) {
+          console.warn(`[LocalScanner] Could not copy imported file "${asset.name}" to persistent storage:`, copyErr);
+        }
+      }
+
+      return {
+        id: safeId,
+        user_id: userId,
+        youtube_id: null,
+        title,
+        artist,
+        local_audio_uri: persistedUri,
+        local_artwork_uri: null,
+        duration: 0,
+        source: 'local',
+        is_synced: 0,
+        created_at: new Date().toISOString(),
+      };
+    })
+  );
 
   if (tracks.length > 0) {
-    await saveTracks(tracks);
+    await saveTracks(tracks, userId);
   }
 
   return getAllTracks(userId);

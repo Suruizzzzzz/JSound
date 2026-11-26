@@ -468,8 +468,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
               status.currentTime >= 0
             ) {
               const isWithinSeekWindow = Date.now() - lastSeekTimestamp < 1200;
-              const currentPositionMs = prevState.position * 1000;
-              const reportedPositionMs = status.currentTime * 1000;
+              const backwardDeltaMs = (prevState.position - status.currentTime) * 1000;
 
               if (
                 isWithinSeekWindow &&
@@ -480,10 +479,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
                 nextPosition = prevState.position;
               } else if (
                 !isWithinSeekWindow &&
-                reportedPositionMs < currentPositionMs &&
-                currentPositionMs - reportedPositionMs < 2500
+                status.currentTime > 0.25 &&
+                backwardDeltaMs > 0 &&
+                backwardDeltaMs <= 800
               ) {
-                // Ignore minor backward jitter during normal playback
+                // Ignore minor sub-second frame jitter during continuous playback,
+                // while immediately applying legitimate lock-screen rewinds and -10s skips
                 nextPosition = prevState.position;
               } else {
                 nextPosition = status.currentTime;

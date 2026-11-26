@@ -2,8 +2,24 @@ import { create } from 'zustand';
 import { Track } from '@/types/music';
 import { getAllTracks } from '@/repositories/trackRepository';
 import { isTrackAudioMissing } from '@/services/playlistSyncService';
-import { downloadTrackToOfflineLibrary, OnlineTrackResult } from '@/services/musicDownloadService';
+import {
+  cancelTrackDownload,
+  downloadTrackToOfflineLibrary,
+  OnlineTrackResult,
+} from '@/services/musicDownloadService';
 import { usePlayerStore } from '@/store/playerStore';
+
+function resolveSyncOnlineId(track: Track): string {
+  if (track.youtube_id && track.youtube_id.trim().length > 0) {
+    return track.youtube_id.trim();
+  }
+  const stripped = track.id
+    .replace(/^online_youtube_/, '')
+    .replace(/^stream_youtube_/, '')
+    .replace(/^track_yt_/, '')
+    .replace(/^yt_/, '');
+  return stripped || `query_${encodeURIComponent(track.title)}`;
+}
 
 export interface SyncProgressState {
   isDownloading: boolean;
@@ -23,6 +39,8 @@ export interface SyncProgressState {
 }
 
 let isCancelled = false;
+let activeSyncTrackId: string | null = null;
+let activeSyncOnlineId: string | null = null;
 
 export const useSyncProgressStore = create<SyncProgressState>((set, get) => ({
   isDownloading: false,
@@ -88,23 +106,19 @@ export const useSyncProgressStore = create<SyncProgressState>((set, get) => ({
     for (let i = 0; i < targets.length; i++) {
       if (isCancelled) break;
       const track = targets[i];
+      const onlineId = resolveSyncOnlineId(track);
+      activeSyncTrackId = track.id;
+      activeSyncOnlineId = onlineId;
+
       set({
         currentIndex: i + 1,
         currentTitle: track.title,
         currentProgress: 0,
       });
 
-      const onlineId =
-        track.youtube_id ||
-        (track.id.startsWith('track_yt_')
-          ? track.id.replace(/^track_yt_/, '')
-          : track.id.startsWith('yt_')
-          ? track.id.replace(/^yt_/, '')
-          : null);
-
       try {
         const onlineTrack: OnlineTrackResult = {
-          id: onlineId || `query_${encodeURIComponent(track.title)}`,
+          id: onlineId,
           title: track.title,
           artist: track.artist || 'Unknown Artist',
           duration: track.duration || 0,
@@ -112,13 +126,23 @@ export const useSyncProgressStore = create<SyncProgressState>((set, get) => ({
           source: 'youtube',
         };
 
-        await downloadTrackToOfflineLibrary(onlineTrack, (pct) => {
-          if (!isCancelled) {
-            set({ currentProgress: Math.min(100, Math.max(0, Math.round(pct))) });
+        await downloadTrackToOfflineLibrary(
+          onlineTrack,
+          (pct) => {
+            if (!isCancelled) {
+              set({ currentProgress: Math.min(100, Math.max(0, Math.round(pct))) });
+            }
+          },
+          {
+            isPlaylistOnly: track.is_playlist_only === 1,
+            targetTrackId: track.id,
           }
-        });
+        );
       } catch (err) {
         console.warn(`[SyncProgress] Error downloading "${track.title}":`, err);
+      } finally {
+        activeSyncTrackId = null;
+        activeSyncOnlineId = null;
       }
     }
 
@@ -144,6 +168,12 @@ export const useSyncProgressStore = create<SyncProgressState>((set, get) => ({
 
   cancelSyncDownload: () => {
     isCancelled = true;
+    const onlineIdToCancel = activeSyncOnlineId || activeSyncTrackId;
+    activeSyncTrackId = null;
+    activeSyncOnlineId = null;
+    if (onlineIdToCancel) {
+      cancelTrackDownload(onlineIdToCancel).catch(() => {});
+    }
     set({
       isDownloading: false,
       currentIndex: 0,

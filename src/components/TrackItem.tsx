@@ -16,7 +16,6 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Track } from '@/types/music';
-import { resumeAudio } from '@/services/audioService';
 import { usePlayerStore, PlaybackContext } from '@/store/playerStore';
 import { useThemeStore } from '@/store/themeStore';
 import ConfirmModal from '@/components/ConfirmModal';
@@ -170,12 +169,7 @@ export default function TrackItem({
     }
 
     if (isCurrent) {
-      if (!activePlaying) {
-        resumeAudio();
-        usePlayerStore.setState({ isPlaying: true });
-      } else {
-        togglePlayPause();
-      }
+      togglePlayPause();
     } else {
       playTrack(track, queue, playbackContext);
     }
