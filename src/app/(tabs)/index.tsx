@@ -101,6 +101,7 @@ export default function LibraryScreen() {
   const currentTrack = usePlayerStore((state) => state.currentTrack);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const authUser = useAuthStore((state) => state.user);
+  const isAuthHydrated = useAuthStore((state) => state.isAuthHydrated);
 
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
@@ -334,10 +335,12 @@ export default function LibraryScreen() {
     return sorted;
   }, []);
 
+  const authUserId = authUser?.id;
+
   // Load playlists helper
-  const loadPlaylists = useCallback(async () => {
+  const loadPlaylists = useCallback(async (userId?: string) => {
     try {
-      const stored = await getAllPlaylists();
+      const stored = await getAllPlaylists(userId);
       setPlaylists(stored);
     } catch (e) {
       console.warn('Failed to load playlists:', e);
@@ -352,42 +355,49 @@ export default function LibraryScreen() {
     }
   }, [scanMessage]);
 
-  // Initial load
+  // Initial load (wait until cached auth user_id is hydrated so UI never flashes 0 tracks)
   useEffect(() => {
+    if (!isAuthHydrated) return;
     let isMounted = true;
     (async () => {
       try {
-        const storedTracks = await getAllTracks();
-        const savedSort = ((await getSetting('library_sort')) as SortChoice) || 'last_download';
+        const [stored, savedSortRaw, storedPlaylists] = await Promise.all([
+          getAllTracks(authUserId),
+          getSetting('library_sort'),
+          getAllPlaylists(authUserId),
+        ]);
+        const savedSort = (savedSortRaw as SortChoice) || 'last_download';
         if (isMounted) {
           setSortChoice(savedSort);
-          const sorted = savedSort !== 'custom' ? applySort(storedTracks, savedSort) : storedTracks;
-          setTracks(sorted);
+          setTracks(savedSort !== 'custom' ? applySort(stored, savedSort) : stored);
+          setPlaylists(storedPlaylists);
         }
       } catch (error) {
         console.warn('Failed to load tracks from DB:', error);
-      }
-      if (isMounted) {
-        await loadPlaylists();
       }
     })();
     return () => {
       isMounted = false;
     };
-  }, [setTracks, loadPlaylists, applySort]);
+  }, [isAuthHydrated, authUserId, setTracks, applySort]);
 
   // Refresh library and maintain Last Download sort order when returning to Library tab
   useFocusEffect(
     useCallback(() => {
+      if (!isAuthHydrated) return;
       let isMounted = true;
       (async () => {
         try {
-          const stored = await getAllTracks();
-          const savedSort = ((await getSetting('library_sort')) as SortChoice) || 'last_download';
+          const [stored, savedSortRaw, storedPlaylists] = await Promise.all([
+            getAllTracks(authUserId),
+            getSetting('library_sort'),
+            getAllPlaylists(authUserId),
+          ]);
+          const savedSort = (savedSortRaw as SortChoice) || 'last_download';
           if (isMounted) {
             setSortChoice(savedSort);
-            const sorted = savedSort !== 'custom' ? applySort(stored, savedSort) : stored;
-            setTracks(sorted);
+            setTracks(savedSort !== 'custom' ? applySort(stored, savedSort) : stored);
+            setPlaylists(storedPlaylists);
           }
         } catch (e) {
           console.warn('Failed to refresh tracks on tab focus:', e);
@@ -396,7 +406,7 @@ export default function LibraryScreen() {
       return () => {
         isMounted = false;
       };
-    }, [applySort, setTracks])
+    }, [isAuthHydrated, authUserId, applySort, setTracks])
   );
 
   // Hook up Add Music modal triggers for the interactive walkthrough guide
@@ -1006,7 +1016,7 @@ export default function LibraryScreen() {
         newPlaylistCoverUri,
         null,
         undefined,
-        'local_guest',
+        undefined,
         newPlaylistIsPublic
       );
       await loadPlaylists();
@@ -1727,7 +1737,7 @@ export default function LibraryScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Subtle JS Monogram Background Watermark */}
+      {/* Subtle Cat Logo Background Watermark */}
       <View style={styles.watermarkContainer} pointerEvents="none">
         <Image source={logoSource} style={styles.watermarkImage} resizeMode="contain" />
       </View>

@@ -247,7 +247,7 @@ export default function AuthScreen() {
     <SafeAreaView style={styles.container}>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
 
-      {/* Subtle Oversized JS Monogram Background Watermark */}
+      {/* Subtle Oversized Cat Logo Background Watermark */}
       <View style={styles.watermarkContainer} pointerEvents="none">
         <Image
           source={logoSource}

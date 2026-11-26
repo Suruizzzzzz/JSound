@@ -1,8 +1,12 @@
 import { create } from 'zustand';
-import { getSetting, setSetting, registerActiveUserIdGetter } from '@/lib/database';
-import { supabase } from '@/services/supabase';
+import { getSetting, setSetting, registerActiveUserIdGetter, claimGuestLibrary } from '@/lib/database';
+import { supabase, ExpoSecureStoreAdapter, getCachedSupabaseSessionUserId } from '@/services/supabase';
 import { authService } from '@/services/authService';
 import { syncPlaylistsToCloud as syncWithCloud } from '@/services/playlistSyncService';
+import type { User } from '@supabase/supabase-js';
+
+export const LAST_USER_ID_KEY = '@jstream_last_user_id';
+const LAST_USER_PROFILE_KEY = '@jstream_last_user_profile';
 
 export interface UserProfile {
   id: string;
@@ -27,6 +31,7 @@ export const GUEST_USER: UserProfile = {
 export interface AuthState {
   user: UserProfile;
   isGuestSession: boolean;
+  isAuthHydrated: boolean;
   isSyncing: boolean;
   setGuestSession: (isGuest: boolean) => void;
   initProfile: () => Promise<void>;
@@ -46,10 +51,75 @@ export interface AuthState {
   signOut: () => Promise<void>;
 }
 
+let lastKnownUserId: string | null = null;
+let explicitSignOutInProgress = false;
+let initProfilePromise: Promise<void> | null = null;
+
+async function persistLastSignedInUser(profile: UserProfile): Promise<void> {
+  if (!profile.id || profile.id === 'local_guest') return;
+  lastKnownUserId = profile.id;
+  try {
+    await ExpoSecureStoreAdapter.setItem(LAST_USER_ID_KEY, profile.id);
+    await ExpoSecureStoreAdapter.setItem(
+      LAST_USER_PROFILE_KEY,
+      JSON.stringify({
+        id: profile.id,
+        name: profile.name,
+        email: profile.email,
+        avatar_url: profile.avatar_url ?? null,
+        last_synced_at: profile.last_synced_at ?? null,
+      })
+    );
+  } catch (err) {
+    console.warn('[Auth] Failed to persist last signed-in user id:', err);
+  }
+}
+
+async function clearLastSignedInUser(): Promise<void> {
+  lastKnownUserId = null;
+  try {
+    await ExpoSecureStoreAdapter.removeItem(LAST_USER_ID_KEY);
+    await ExpoSecureStoreAdapter.removeItem(LAST_USER_PROFILE_KEY);
+  } catch (err) {
+    console.warn('[Auth] Failed to clear last signed-in user id:', err);
+  }
+}
+
+function buildUserProfileFromSupabaseUser(
+  sbUser: User,
+  overrides?: { name?: string | null; email?: string | null; avatar_url?: string | null; sync_status?: 'synced' | 'pending' | 'offline'; last_synced_at?: string | null }
+): UserProfile {
+  const displayName =
+    overrides?.name ||
+    sbUser.user_metadata?.display_name ||
+    sbUser.user_metadata?.full_name ||
+    (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
+  const avatarUrl =
+    overrides?.avatar_url !== undefined
+      ? overrides.avatar_url
+      : sbUser.user_metadata?.avatar_url || null;
+
+  return {
+    id: sbUser.id,
+    name: displayName,
+    email: overrides?.email ?? sbUser.email ?? '',
+    avatar_url: avatarUrl,
+    is_logged_in: true,
+    sync_status: overrides?.sync_status ?? 'synced',
+    last_synced_at:
+      overrides?.last_synced_at !== undefined
+        ? overrides.last_synced_at
+        : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
 export function getCurrentUserId(): string {
   const user = useAuthStore.getState().user;
   if (user?.is_logged_in && user.id && user.id !== 'local_guest') {
     return user.id;
+  }
+  if (lastKnownUserId && lastKnownUserId !== 'local_guest') {
+    return lastKnownUserId;
   }
   return 'local_guest';
 }
@@ -100,11 +170,80 @@ export async function handleUserLoginTransition(userId: string): Promise<void> {
   await migrationInProgress;
 }
 
+async function refreshRemoteProfileInBackground(
+  sbUser: User,
+  set: (partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>)) => void
+): Promise<void> {
+  try {
+    const remoteProfile = await authService.getProfile(sbUser.id);
+    if (!remoteProfile) return;
+
+    let updatedName =
+      remoteProfile.display_name ||
+      sbUser.user_metadata?.display_name ||
+      sbUser.user_metadata?.full_name ||
+      (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
+    if (remoteProfile.display_name) {
+      await setSetting('profile_display_name', remoteProfile.display_name);
+    }
+
+    let updatedAvatar: string | null = sbUser.user_metadata?.avatar_url || null;
+    if (remoteProfile.avatar_url) {
+      if (remoteProfile.avatar_url.startsWith('http')) {
+        updatedAvatar = await authService.downloadAndCacheAvatar(remoteProfile.avatar_url, sbUser.id);
+        await setSetting('profile_avatar_uri', updatedAvatar);
+      } else {
+        updatedAvatar = remoteProfile.avatar_url;
+      }
+    } else if (remoteProfile.avatar_url === null) {
+      updatedAvatar = null;
+      await setSetting('profile_avatar_uri', '');
+    }
+
+    set((state) => {
+      if (state.user.id !== sbUser.id) return {};
+      const nextUser: UserProfile = {
+        ...state.user,
+        name: updatedName,
+        avatar_url: updatedAvatar,
+      };
+      persistLastSignedInUser(nextUser).catch(() => {});
+      return { user: nextUser };
+    });
+  } catch {
+    // Offline or unreachable — keep cached profile
+  }
+}
+
+async function applyAuthenticatedUser(
+  sbUser: User,
+  set: (partial: Partial<AuthState> | ((state: AuthState) => Partial<AuthState>)) => void,
+  overrides?: { name?: string; email?: string; sync_status?: 'synced' | 'pending' | 'offline'; last_synced_at?: string | null }
+): Promise<void> {
+  const savedLocalName = await getSetting('profile_display_name', null);
+  const savedLocalAvatar = await getSetting('profile_avatar_uri', null);
+  const profile = buildUserProfileFromSupabaseUser(sbUser, {
+    name: overrides?.name || savedLocalName || undefined,
+    email: overrides?.email ?? sbUser.email ?? '',
+    avatar_url: savedLocalAvatar || sbUser.user_metadata?.avatar_url || null,
+    sync_status: overrides?.sync_status ?? 'synced',
+    last_synced_at: overrides?.last_synced_at,
+  });
+
+  await persistLastSignedInUser(profile);
+  set({
+    user: profile,
+    isGuestSession: false,
+    isAuthHydrated: true,
+  });
+}
+
 let authListenerSubscribed = false;
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: GUEST_USER,
   isGuestSession: true, // Offline Guest Mode enabled by default
+  isAuthHydrated: false,
   isSyncing: false,
 
   setGuestSession: (isGuest: boolean) => {
@@ -112,124 +251,131 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   initProfile: async () => {
-    try {
-      // 1. Subscribe to Supabase auth state change events once
-      if (!authListenerSubscribed) {
-        authListenerSubscribed = true;
-        supabase.auth.onAuthStateChange(async (event, session) => {
-          if (session?.user) {
-            const sbUser = session.user;
-            let displayName =
-              sbUser.user_metadata?.display_name ||
-              sbUser.user_metadata?.full_name ||
-              (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-            let avatarUrl = sbUser.user_metadata?.avatar_url || null;
+    if (initProfilePromise) {
+      return initProfilePromise;
+    }
 
-            try {
-              const remoteProfile = await authService.getProfile(sbUser.id);
-              if (remoteProfile) {
-                if (remoteProfile.display_name) displayName = remoteProfile.display_name;
-                if (remoteProfile.avatar_url) avatarUrl = remoteProfile.avatar_url;
+    initProfilePromise = (async () => {
+      try {
+        // 1. Subscribe to Supabase auth state change events once
+        if (!authListenerSubscribed) {
+          authListenerSubscribed = true;
+          supabase.auth.onAuthStateChange(async (event, session) => {
+            if (session?.user) {
+              const sbUser = session.user;
+              await applyAuthenticatedUser(sbUser, set, { sync_status: 'synced' });
+              refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
+              await handleUserLoginTransition(sbUser.id);
+            } else if (event === 'SIGNED_OUT') {
+              // Only clear user & switch to local_guest on explicit Sign Out — NEVER when offline!
+              if (!explicitSignOutInProgress && lastKnownUserId) {
+                set((state) => ({
+                  user: {
+                    ...state.user,
+                    sync_status: 'offline',
+                  },
+                  isAuthHydrated: true,
+                }));
+                return;
               }
-            } catch {
-              // fallback to metadata
+              const savedName = await getSetting('profile_display_name', 'JStream Listener');
+              const savedAvatar = await getSetting('profile_avatar_uri', null);
+              set({
+                user: {
+                  ...GUEST_USER,
+                  name: savedName || GUEST_USER.name,
+                  avatar_url: savedAvatar || null,
+                },
+                isGuestSession: false,
+                isAuthHydrated: true,
+              });
             }
+          });
+        }
 
-            set({
-              user: {
-                id: sbUser.id,
-                name: displayName,
-                email: sbUser.email || '',
-                avatar_url: avatarUrl,
-                is_logged_in: true,
-                sync_status: 'synced',
-                last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              },
-              isGuestSession: false,
-            });
-            await handleUserLoginTransition(sbUser.id);
-          } else if (event === 'SIGNED_OUT') {
-            const savedName = await getSetting('profile_display_name', 'JStream Listener');
-            const savedAvatar = await getSetting('profile_avatar_uri', null);
-            set({
-              user: {
-                ...GUEST_USER,
-                name: savedName || GUEST_USER.name,
-                avatar_url: savedAvatar || null,
-              },
-              isGuestSession: false,
-            });
+        // 2. Immediately hydrate last known signed-in user from local storage (zero network)
+        let hydratedUserId = await ExpoSecureStoreAdapter.getItem(LAST_USER_ID_KEY);
+        if (!hydratedUserId) {
+          hydratedUserId = await getCachedSupabaseSessionUserId();
+          if (hydratedUserId && hydratedUserId !== 'local_guest') {
+            await ExpoSecureStoreAdapter.setItem(LAST_USER_ID_KEY, hydratedUserId);
           }
-        });
-      }
+        }
 
-      // 2. Check if a persisted Supabase session exists
-      const session = await authService.getSession();
-      if (session?.user) {
-        const sbUser = session.user;
         const savedLocalName = await getSetting('profile_display_name', null);
         const savedLocalAvatar = await getSetting('profile_avatar_uri', null);
 
-        let displayName =
-          savedLocalName ||
-          sbUser.user_metadata?.display_name ||
-          sbUser.user_metadata?.full_name ||
-          (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-        let avatarUrl = savedLocalAvatar || sbUser.user_metadata?.avatar_url || null;
-
-        try {
-          const remoteProfile = await authService.getProfile(sbUser.id);
-          if (remoteProfile) {
-            if (remoteProfile.display_name) {
-              displayName = remoteProfile.display_name;
-              await setSetting('profile_display_name', displayName);
+        if (hydratedUserId && hydratedUserId !== 'local_guest') {
+          lastKnownUserId = hydratedUserId;
+          let cachedProfile: Partial<UserProfile> | null = null;
+          try {
+            const rawProfile = await ExpoSecureStoreAdapter.getItem(LAST_USER_PROFILE_KEY);
+            if (rawProfile) {
+              cachedProfile = JSON.parse(rawProfile);
             }
-            if (remoteProfile.avatar_url) {
-              if (remoteProfile.avatar_url.startsWith('http')) {
-                const localCached = await authService.downloadAndCacheAvatar(remoteProfile.avatar_url, sbUser.id);
-                avatarUrl = localCached;
-                await setSetting('profile_avatar_uri', localCached);
-              } else {
-                avatarUrl = remoteProfile.avatar_url;
-              }
-            } else if (remoteProfile.avatar_url === null) {
-              avatarUrl = null;
-              await setSetting('profile_avatar_uri', '');
-            }
+          } catch {
+            // ignore corrupt cached JSON
           }
-        } catch {
-          // offline fallback: use local cached settings
+
+          set({
+            user: {
+              id: hydratedUserId,
+              name: cachedProfile?.name || savedLocalName || 'JStream Member',
+              email: cachedProfile?.email || '',
+              avatar_url: cachedProfile?.avatar_url ?? savedLocalAvatar ?? null,
+              is_logged_in: true,
+              sync_status: 'offline',
+              last_synced_at: cachedProfile?.last_synced_at ?? null,
+            },
+            isGuestSession: false,
+            isAuthHydrated: true,
+          });
+
+          // Ensure any leftover local_guest rows are safely claimed into this account offline
+          await claimGuestLibrary(hydratedUserId).catch(() => {});
         }
 
-        set({
-          user: {
-            id: sbUser.id,
-            name: displayName,
-            email: sbUser.email || '',
-            avatar_url: avatarUrl,
-            is_logged_in: true,
+        // 3. Check persisted Supabase session (bounded timeout so expired token refresh never blocks offline boot)
+        const session = await Promise.race([
+          authService.getSession().catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+
+        if (session?.user) {
+          const sbUser = session.user;
+          await applyAuthenticatedUser(sbUser, set, {
             sync_status: 'synced',
             last_synced_at: null,
-          },
-          isGuestSession: false,
-        });
-        await handleUserLoginTransition(sbUser.id);
-        return;
-      }
+          });
+          // Refresh remote profile & cloud sync in background without blocking offline boot
+          refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
+          handleUserLoginTransition(sbUser.id).catch(() => {});
+          return;
+        }
 
-      // 3. Fallback: load local guest profile settings from SQLite
-      const savedName = await getSetting('profile_display_name', 'JStream Listener');
-      const savedAvatar = await getSetting('profile_avatar_uri', null);
-      set((state) => ({
-        user: {
-          ...state.user,
-          name: savedName || 'JStream Listener',
-          avatar_url: savedAvatar || null,
-        },
-      }));
-    } catch (e) {
-      console.warn('Failed to load profile settings:', e);
-    }
+        // 4. If cached user was hydrated above, keep them signed in offline!
+        if (hydratedUserId && hydratedUserId !== 'local_guest') {
+          return;
+        }
+
+        // 5. No cached user & no session: true local_guest mode
+        set((state) => ({
+          user: {
+            ...state.user,
+            name: savedLocalName || 'JStream Listener',
+            avatar_url: savedLocalAvatar || null,
+          },
+          isAuthHydrated: true,
+        }));
+      } catch (e) {
+        console.warn('Failed to load profile settings:', e);
+        set({ isAuthHydrated: true });
+      } finally {
+        initProfilePromise = null;
+      }
+    })();
+
+    return initProfilePromise;
   },
 
   setProfileName: async (name: string) => {
@@ -307,23 +453,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     if (data.session?.user) {
       const sbUser = data.session.user;
-      const displayNameResolved =
-        displayName?.trim() ||
-        sbUser.user_metadata?.display_name ||
-        sbUser.user_metadata?.full_name ||
-        (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-
-      set({
-        user: {
-          id: sbUser.id,
-          name: displayNameResolved,
-          email: sbUser.email || email,
-          avatar_url: sbUser.user_metadata?.avatar_url || null,
-          is_logged_in: true,
-          sync_status: 'synced',
-          last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-        isGuestSession: false,
+      await applyAuthenticatedUser(sbUser, set, {
+        name: displayName?.trim() || undefined,
+        email: sbUser.email || email,
       });
       await handleUserLoginTransition(sbUser.id);
       return { needsConfirmation: false, identityCollision: false };
@@ -339,34 +471,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const data = await authService.checkEmailConfirmed({ email, password });
     if (data.session?.user) {
       const sbUser = data.session.user;
-      let displayName =
-        sbUser.user_metadata?.display_name ||
-        sbUser.user_metadata?.full_name ||
-        (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-      let avatarUrl = sbUser.user_metadata?.avatar_url || null;
-
-      try {
-        const remoteProfile = await authService.getProfile(sbUser.id);
-        if (remoteProfile) {
-          if (remoteProfile.display_name) displayName = remoteProfile.display_name;
-          if (remoteProfile.avatar_url) avatarUrl = remoteProfile.avatar_url;
-        }
-      } catch {
-        // fallback to metadata
-      }
-
-      set({
-        user: {
-          id: sbUser.id,
-          name: displayName,
-          email: sbUser.email || email,
-          avatar_url: avatarUrl,
-          is_logged_in: true,
-          sync_status: 'synced',
-          last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-        isGuestSession: false,
-      });
+      await applyAuthenticatedUser(sbUser, set, { email: sbUser.email || email });
+      refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
       await handleUserLoginTransition(sbUser.id);
     }
   },
@@ -376,17 +482,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Fallback for tests or direct calls
       const username = email.split('@')[0] || 'User';
       const fallbackId = `user_${Date.now()}`;
+      const fallbackProfile: UserProfile = {
+        id: fallbackId,
+        name: username.charAt(0).toUpperCase() + username.slice(1),
+        email: email || 'user@example.com',
+        avatar_url: null,
+        is_logged_in: true,
+        sync_status: 'pending',
+        last_synced_at: null,
+      };
+      await persistLastSignedInUser(fallbackProfile);
       set({
-        user: {
-          id: fallbackId,
-          name: username.charAt(0).toUpperCase() + username.slice(1),
-          email: email || 'user@example.com',
-          avatar_url: null,
-          is_logged_in: true,
-          sync_status: 'pending',
-          last_synced_at: null,
-        },
+        user: fallbackProfile,
         isGuestSession: false,
+        isAuthHydrated: true,
       });
       await handleUserLoginTransition(fallbackId);
       return;
@@ -395,34 +504,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const data = await authService.signInWithEmail(email, password);
     if (data.session?.user) {
       const sbUser = data.session.user;
-      let displayName =
-        sbUser.user_metadata?.display_name ||
-        sbUser.user_metadata?.full_name ||
-        (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-      let avatarUrl = sbUser.user_metadata?.avatar_url || null;
-
-      try {
-        const remoteProfile = await authService.getProfile(sbUser.id);
-        if (remoteProfile) {
-          if (remoteProfile.display_name) displayName = remoteProfile.display_name;
-          if (remoteProfile.avatar_url) avatarUrl = remoteProfile.avatar_url;
-        }
-      } catch {
-        // use metadata
-      }
-
-      set({
-        user: {
-          id: sbUser.id,
-          name: displayName,
-          email: sbUser.email || email,
-          avatar_url: avatarUrl,
-          is_logged_in: true,
-          sync_status: 'synced',
-          last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-        isGuestSession: false,
-      });
+      await applyAuthenticatedUser(sbUser, set, { email: sbUser.email || email });
+      refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
       await handleUserLoginTransition(sbUser.id);
     }
   },
@@ -432,34 +515,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const sbUser = sessionData?.session?.user;
 
     if (sbUser) {
-      let displayName =
-        sbUser.user_metadata?.display_name ||
-        sbUser.user_metadata?.full_name ||
-        (sbUser.email ? sbUser.email.split('@')[0] : 'JStream Member');
-      let avatarUrl = sbUser.user_metadata?.avatar_url || null;
-
-      try {
-        const remoteProfile = await authService.getProfile(sbUser.id);
-        if (remoteProfile) {
-          if (remoteProfile.display_name) displayName = remoteProfile.display_name;
-          if (remoteProfile.avatar_url) avatarUrl = remoteProfile.avatar_url;
-        }
-      } catch {
-        // use metadata
-      }
-
-      set({
-        user: {
-          id: sbUser.id,
-          name: displayName,
-          email: sbUser.email || '',
-          avatar_url: avatarUrl,
-          is_logged_in: true,
-          sync_status: 'synced',
-          last_synced_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-        isGuestSession: false,
-      });
+      await applyAuthenticatedUser(sbUser, set);
+      refreshRemoteProfileInBackground(sbUser, set).catch(() => {});
       await handleUserLoginTransition(sbUser.id);
     }
   },
@@ -581,47 +638,55 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   signOut: async () => {
+    explicitSignOutInProgress = true;
     try {
-      await authService.signOut();
-    } catch (e) {
-      console.warn('Error during Supabase signOut:', e);
-    }
+      await clearLastSignedInUser();
 
-    try {
-      // 1. Stop and release any active audio playback
-      const { stopAndUnloadAudio } = await import('@/services/audioService');
-      await stopAndUnloadAudio();
-    } catch (audioErr) {
-      console.warn('Error stopping audio on signOut:', audioErr);
-    }
+      try {
+        await authService.signOut();
+      } catch (e) {
+        console.warn('Error during Supabase signOut:', e);
+      }
 
-    try {
-      // 2. Clear in-memory library & playback queue
-      const { usePlayerStore } = await import('@/store/playerStore');
-      usePlayerStore.setState({
-        currentTrack: null,
-        queue: [],
-        tracks: [],
-        isPlaying: false,
-        position: 0,
-        duration: 0,
-        playbackContext: null,
+      try {
+        // 1. Stop and release any active audio playback
+        const { stopAndUnloadAudio } = await import('@/services/audioService');
+        await stopAndUnloadAudio();
+      } catch (audioErr) {
+        console.warn('Error stopping audio on signOut:', audioErr);
+      }
+
+      try {
+        // 2. Clear in-memory library & playback queue
+        const { usePlayerStore } = await import('@/store/playerStore');
+        usePlayerStore.setState({
+          currentTrack: null,
+          queue: [],
+          tracks: [],
+          isPlaying: false,
+          position: 0,
+          duration: 0,
+          playbackContext: null,
+        });
+      } catch (storeErr) {
+        console.warn('Error resetting player store on signOut:', storeErr);
+      }
+
+      const savedName = await getSetting('profile_display_name', 'JStream Listener');
+      const savedAvatar = await getSetting('profile_avatar_uri', null);
+
+      set({
+        user: {
+          ...GUEST_USER,
+          name: savedName || GUEST_USER.name,
+          avatar_url: savedAvatar || null,
+        },
+        isGuestSession: false,
+        isAuthHydrated: true,
+        isSyncing: false,
       });
-    } catch (storeErr) {
-      console.warn('Error resetting player store on signOut:', storeErr);
+    } finally {
+      explicitSignOutInProgress = false;
     }
-
-    const savedName = await getSetting('profile_display_name', 'JStream Listener');
-    const savedAvatar = await getSetting('profile_avatar_uri', null);
-
-    set({
-      user: {
-        ...GUEST_USER,
-        name: savedName || GUEST_USER.name,
-        avatar_url: savedAvatar || null,
-      },
-      isGuestSession: false,
-      isSyncing: false,
-    });
   },
 }));

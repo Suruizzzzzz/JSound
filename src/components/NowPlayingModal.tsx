@@ -210,7 +210,7 @@ export default function NowPlayingModal() {
       <SafeAreaView style={styles.container}>
         <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
 
-        {/* Subtle JS Monogram Background Watermark Backdrop */}
+        {/* Subtle Cat Logo Background Watermark Backdrop */}
         <View style={styles.watermarkContainer} pointerEvents="none">
           <Image
             source={logoSource}

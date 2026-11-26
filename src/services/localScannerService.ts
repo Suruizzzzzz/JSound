@@ -1,5 +1,6 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import { getActiveUserId } from '@/lib/database';
 import { saveTracks, getAllTracks } from '@/repositories/trackRepository';
 import { Track } from '@/types/music';
 
@@ -47,7 +48,7 @@ export async function requestMediaLibraryPermissions(): Promise<boolean> {
   }
 }
 
-export async function scanLocalMusic(userId: string = 'local_guest'): Promise<Track[]> {
+export async function scanLocalMusic(userId: string = getActiveUserId()): Promise<Track[]> {
   const hasPermission = await requestMediaLibraryPermissions();
   if (!hasPermission) {
     throw new Error('PERMISSION_RESTRICTED');
@@ -88,7 +89,7 @@ export async function scanLocalMusic(userId: string = 'local_guest'): Promise<Tr
   return getAllTracks(userId);
 }
 
-export async function pickAndImportAudioFiles(userId: string = 'local_guest'): Promise<Track[]> {
+export async function pickAndImportAudioFiles(userId: string = getActiveUserId()): Promise<Track[]> {
   const result = await DocumentPicker.getDocumentAsync({
     type: 'audio/*',
     multiple: true,

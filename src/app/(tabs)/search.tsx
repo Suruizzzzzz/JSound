@@ -113,11 +113,15 @@ export default function SearchScreen() {
     icon: 'alert-circle-outline',
   });
 
-  // Initial load of offline tracks into playerStore
+  // Initial load of offline tracks into playerStore (wait until cached auth hydrates)
   useEffect(() => {
     let isMounted = true;
     (async () => {
       try {
+        const { useAuthStore } = await import('@/store/authStore');
+        if (!useAuthStore.getState().isAuthHydrated) {
+          await useAuthStore.getState().initProfile();
+        }
         const stored = await getAllTracks();
         if (isMounted) {
           usePlayerStore.getState().setTracks(stored);
@@ -495,7 +499,7 @@ export default function SearchScreen() {
             onPress={() => handleMainPress(item)}
             activeOpacity={0.7}
           >
-            {/* Rounded Thumbnail / Monogram Icon with resolving spinner overlay */}
+            {/* Rounded Thumbnail / Logo Icon with resolving spinner overlay */}
             <View style={styles.thumbnailContainer}>
               {item.thumbnailUrl ? (
                 <Image
@@ -641,7 +645,7 @@ export default function SearchScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Subtle JS Monogram Background Watermark */}
+      {/* Subtle Cat Logo Background Watermark */}
       <View style={styles.watermarkContainer} pointerEvents="none">
         <Image source={logoSource} style={styles.watermarkImage} resizeMode="contain" />
       </View>

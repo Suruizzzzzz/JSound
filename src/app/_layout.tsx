@@ -24,6 +24,8 @@ export default function RootLayout() {
   const theme = useThemeStore((state) => state.theme);
   const initTheme = useThemeStore((state) => state.initTheme);
 
+  const [isAppReady, setIsAppReady] = React.useState(false);
+
   // Auto-redirect to /(tabs) when authenticated if currently on welcome or auth screens
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -43,16 +45,16 @@ export default function RootLayout() {
 
     async function prepare() {
       try {
-        // Initialize SQLite Database schema
+        // 1. Initialize SQLite Database schema
         await initDatabase().catch((e) => console.warn('initDatabase error:', e));
 
-        // Load saved theme preference
+        // 2. Load saved theme preference
         await initTheme().catch((e) => console.warn('initTheme error:', e));
 
-        // Load saved local user profile
+        // 3. Hydrate cached auth / last signed-in user_id BEFORE any library query runs
         await useAuthStore.getState().initProfile().catch((e) => console.warn('initProfile error:', e));
 
-        // Preload stored tracks into Zustand store
+        // 4. Preload stored tracks for the resolved user_id into Zustand store
         const tracks = await getAllTracks().catch(() => []);
         if (isMounted) {
           setTracks(tracks);
@@ -72,22 +74,38 @@ export default function RootLayout() {
       } catch (e) {
         console.warn('Initialization error:', e);
       } finally {
+        if (isMounted) {
+          setIsAppReady(true);
+        }
         await SplashScreen.hideAsync().catch(() => {});
       }
     }
 
     prepare();
 
-    // Guaranteed failsafe: dismiss splash screen within 1000ms even if startup async hangs
+    // Guaranteed failsafe: allow UI and dismiss splash screen within 1500ms even if startup async hangs
     const failsafeTimer = setTimeout(() => {
+      if (isMounted) {
+        setIsAppReady(true);
+      }
       SplashScreen.hideAsync().catch(() => {});
-    }, 1000);
+    }, 1500);
 
     return () => {
       isMounted = false;
       clearTimeout(failsafeTimer);
     };
   }, [setTracks, initTheme]);
+
+  if (!isAppReady) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <View style={{ flex: 1, backgroundColor: theme.background }}>
+          <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
+        </View>
+      </GestureHandlerRootView>
+    );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

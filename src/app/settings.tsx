@@ -8,7 +8,8 @@ import { useThemeStore } from "@/store/themeStore";
 import { useGuideStore } from "@/store/guideStore";
 import { createStyles } from "@/styles/settings.styles";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { CommonActions } from "@react-navigation/native";
+import { useNavigation, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Animated,
@@ -23,6 +24,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const theme = useThemeStore((state) => state.theme);
   const mode = useThemeStore((state) => state.mode);
   const setThemeMode = useThemeStore((state) => state.setThemeMode);
@@ -111,7 +113,12 @@ export default function SettingsScreen() {
       await setSetting('has_seen_welcome', 'false');
       useAuthStore.getState().setGuestSession(false);
       await signOut();
-      router.replace('/');
+      navigation.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: 'index' }],
+        })
+      );
     } catch (e) {
       console.warn("Error during logout:", e);
     }
@@ -398,7 +405,7 @@ export default function SettingsScreen() {
             <View style={styles.rowLeft}>
               <View style={styles.iconWrap}>
                 <Ionicons
-                  name="help-circle-outline"
+                  name="compass-outline"
                   size={18}
                   color={theme.textPrimary}
                 />

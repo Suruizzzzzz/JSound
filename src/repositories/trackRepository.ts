@@ -1,13 +1,65 @@
 import { getDatabase, getActiveUserId } from '@/lib/database';
 import { Track } from '@/types/music';
+import * as FileSystem from 'expo-file-system/legacy';
+
+async function isLocalTrackFilePresent(uri: string | null | undefined): Promise<boolean> {
+  if (!uri || !uri.trim()) return false;
+  if (uri.startsWith('http://') || uri.startsWith('https://')) return false;
+  if (uri.startsWith('file://')) {
+    try {
+      const info = await FileSystem.getInfoAsync(uri);
+      return info.exists === true;
+    } catch {
+      // Never hide or drop a local track on transient FS errors
+      return true;
+    }
+  }
+  return true;
+}
 
 export async function getAllTracks(userId: string = getActiveUserId()): Promise<Track[]> {
   const db = await getDatabase();
-  const rows = await db.getAllAsync<Track>(
+  const primaryRows = await db.getAllAsync<Track>(
     'SELECT * FROM tracks WHERE user_id = ? AND COALESCE(is_playlist_only, 0) = 0 ORDER BY sort_order ASC, created_at DESC',
     [userId]
   );
-  return rows;
+
+  // Unify/recover locally downloaded tracks saved across scopes without leaking is_playlist_only = 1
+  const fallbackRows =
+    userId !== 'local_guest'
+      ? await db.getAllAsync<Track>(
+          "SELECT * FROM tracks WHERE user_id = 'local_guest' AND COALESCE(is_playlist_only, 0) = 0 AND local_audio_uri IS NOT NULL AND TRIM(local_audio_uri) != '' ORDER BY sort_order ASC, created_at DESC"
+        )
+      : await db.getAllAsync<Track>(
+          "SELECT * FROM tracks WHERE user_id != 'local_guest' AND COALESCE(is_playlist_only, 0) = 0 AND local_audio_uri IS NOT NULL AND TRIM(local_audio_uri) != '' ORDER BY sort_order ASC, created_at DESC"
+        );
+
+  if (fallbackRows.length === 0) {
+    return primaryRows;
+  }
+
+  const byId = new Map<string, Track>();
+  for (const row of primaryRows) {
+    byId.set(row.id, row);
+  }
+
+  for (const candidate of fallbackRows) {
+    if (!(await isLocalTrackFilePresent(candidate.local_audio_uri))) {
+      continue;
+    }
+    const existing = byId.get(candidate.id);
+    if (!existing) {
+      byId.set(candidate.id, candidate);
+    } else if (!existing.local_audio_uri || !existing.local_audio_uri.trim()) {
+      byId.set(candidate.id, {
+        ...existing,
+        local_audio_uri: candidate.local_audio_uri,
+        local_artwork_uri: existing.local_artwork_uri || candidate.local_artwork_uri,
+      });
+    }
+  }
+
+  return Array.from(byId.values());
 }
 
 export async function getTrackById(id: string, userId: string = getActiveUserId()): Promise<Track | null> {
@@ -16,7 +68,16 @@ export async function getTrackById(id: string, userId: string = getActiveUserId(
     'SELECT * FROM tracks WHERE user_id = ? AND id = ?',
     [userId, id]
   );
-  return row ?? null;
+  if (row) return row;
+
+  const fallback = await db.getFirstAsync<Track>(
+    "SELECT * FROM tracks WHERE id = ? AND COALESCE(is_playlist_only, 0) = 0 AND local_audio_uri IS NOT NULL AND TRIM(local_audio_uri) != '' LIMIT 1",
+    [id]
+  );
+  if (fallback && (await isLocalTrackFilePresent(fallback.local_audio_uri))) {
+    return fallback;
+  }
+  return null;
 }
 
 export async function saveTrack(track: Track, userId?: string): Promise<void> {
@@ -123,20 +184,19 @@ export async function updateTrackOrder(orderedIds: string[]): Promise<void> {
 }
 
 export async function searchLocalTracks(query: string, userId: string = getActiveUserId()): Promise<Track[]> {
-  const db = await getDatabase();
-  const trimmed = query.trim();
+  const allTracks = await getAllTracks(userId);
+  const trimmed = query.trim().toLowerCase();
   if (!trimmed) {
-    return getAllTracks(userId);
+    return allTracks;
   }
 
-  const pattern = `%${trimmed}%`;
-  const rows = await db.getAllAsync<Track>(
-    `SELECT * FROM tracks 
-     WHERE user_id = ? AND COALESCE(is_playlist_only, 0) = 0 AND (title LIKE ? OR artist LIKE ?) 
-     ORDER BY title COLLATE NOCASE ASC`,
-    [userId, pattern, pattern]
-  );
-  return rows;
+  return allTracks
+    .filter(
+      (t) =>
+        (t.title || '').toLowerCase().includes(trimmed) ||
+        (t.artist || '').toLowerCase().includes(trimmed)
+    )
+    .sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }));
 }
 
 export async function deleteTrack(id: string, userId: string = getActiveUserId()): Promise<void> {

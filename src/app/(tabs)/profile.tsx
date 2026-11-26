@@ -49,6 +49,7 @@ export default function ProfileScreen() {
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const user = useAuthStore((state) => state.user);
+  const isAuthHydrated = useAuthStore((state) => state.isAuthHydrated);
   const isSyncing = useAuthStore((state) => state.isSyncing);
   const syncPlaylistsToCloud = useAuthStore((state) => state.syncPlaylistsToCloud);
   const setProfileName = useAuthStore((state) => state.setProfileName);
@@ -80,8 +81,9 @@ export default function ProfileScreen() {
   const closeSyncHistoryModal = useSyncProgressStore((state) => state.closeSyncHistoryModal);
   const startSyncDownload = useSyncProgressStore((state) => state.startSyncDownload);
 
-  // Load playlist count from local database
+  // Load playlist count from local database after auth hydration
   useEffect(() => {
+    if (!isAuthHydrated) return;
     let isMounted = true;
     async function loadPlaylistCount() {
       try {
@@ -97,7 +99,7 @@ export default function ProfileScreen() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isAuthHydrated, user?.id]);
 
   // Calculate local audio disk storage footprint in MB
   useEffect(() => {
@@ -333,7 +335,7 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Subtle JS Monogram Background Watermark */}
+      {/* Subtle Cat Logo Background Watermark */}
       <View style={styles.watermarkContainer} pointerEvents="none">
         <Image
           source={logoSource}

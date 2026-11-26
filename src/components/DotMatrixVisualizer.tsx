@@ -95,7 +95,7 @@ export default function DotMatrixVisualizer({
     [mode]
   );
 
-  // Theme-adaptive monogram watermark
+  // Theme-adaptive cat logo watermark
   const logoSource = useMemo(
     () =>
       mode === 'dark'
@@ -213,7 +213,7 @@ export default function DotMatrixVisualizer({
 
   return (
     <View style={styles.stage}>
-      {/* Subtle Centered Monogram Watermark behind the bars */}
+      {/* Subtle Centered Cat Logo Watermark behind the bars */}
       <View style={styles.watermarkWrapper} pointerEvents="none">
         <Image
           source={logoSource}

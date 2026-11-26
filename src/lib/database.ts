@@ -412,11 +412,15 @@ export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
     console.warn('Imported playlist tracks cleanup migration error:', cleanErr);
   }
 
-  // Auto-migrate any leftover 'local_guest' rows if a logged-in user is active
+  // Auto-migrate any leftover 'local_guest' rows if a logged-in or cached user is active
   try {
     const activeUserId = getActiveUserId();
-    if (activeUserId && activeUserId !== 'local_guest') {
-      await claimGuestLibrary(activeUserId);
+    const cachedUserId =
+      activeUserId && activeUserId !== 'local_guest'
+        ? activeUserId
+        : await getSetting('sb_storage_@jstream_last_user_id');
+    if (cachedUserId && cachedUserId !== 'local_guest') {
+      await claimGuestLibrary(cachedUserId);
     }
   } catch (claimErr) {
     console.warn('[Database] Auto-claim guest library startup warning:', claimErr);
@@ -1246,12 +1250,26 @@ export async function claimGuestLibrary(targetUserId: string): Promise<{ tracksC
 
       // If the target user already had this track without local audio, attach the guest's local file
       if (t.local_audio_uri) {
-        await db.runAsync(
-          `UPDATE tracks
-           SET local_audio_uri = ?
-           WHERE user_id = ? AND id = ? AND (local_audio_uri IS NULL OR local_audio_uri = '')`,
-          [t.local_audio_uri, targetUserId, t.id]
-        );
+        let shouldAttachAudio = true;
+        if (t.local_audio_uri.startsWith('file://')) {
+          try {
+            const info = await FileSystem.getInfoAsync(t.local_audio_uri);
+            if (info.exists === false) {
+              shouldAttachAudio = false;
+            }
+          } catch {
+            // Keep existing URI if file check fails transiently
+          }
+        }
+        if (shouldAttachAudio) {
+          await db.runAsync(
+            `UPDATE tracks
+             SET local_audio_uri = ?,
+                 local_artwork_uri = COALESCE(NULLIF(local_artwork_uri, ''), ?)
+             WHERE user_id = ? AND id = ? AND (local_audio_uri IS NULL OR TRIM(local_audio_uri) = '')`,
+            [t.local_audio_uri, t.local_artwork_uri || null, targetUserId, t.id]
+          );
+        }
       }
 
       tracksCount++;

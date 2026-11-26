@@ -1,31 +1,47 @@
 import * as SecureStore from 'expo-secure-store';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
+import { getSetting, setSetting } from '@/lib/database';
+
+const STORAGE_FALLBACK_PREFIX = 'sb_storage_';
+
+async function getFallbackItem(key: string): Promise<string | null> {
+  const val = await getSetting(`${STORAGE_FALLBACK_PREFIX}${key}`, null);
+  return val && val.length > 0 ? val : null;
+}
+
+async function setFallbackItem(key: string, value: string): Promise<void> {
+  await setSetting(`${STORAGE_FALLBACK_PREFIX}${key}`, value);
+}
 
 export const ExpoSecureStoreAdapter = {
-  getItem: (key: string): Promise<string | null> => {
+  getItem: async (key: string): Promise<string | null> => {
     if (typeof window === 'undefined') {
-      return Promise.resolve(null);
+      return null;
     }
     if (Platform.OS === 'web') {
       try {
         if (typeof localStorage !== 'undefined') {
-          return Promise.resolve(localStorage.getItem(key));
+          return localStorage.getItem(key);
         }
       } catch {
-        return Promise.resolve(null);
+        return null;
       }
-      return Promise.resolve(null);
+      return null;
     }
     try {
-      return SecureStore.getItemAsync(key);
+      const secureVal = await SecureStore.getItemAsync(key);
+      if (secureVal !== null && secureVal !== '') {
+        return secureVal;
+      }
     } catch {
-      return Promise.resolve(null);
+      // Fall back to SQLite app_settings below
     }
+    return getFallbackItem(key);
   },
-  setItem: (key: string, value: string): Promise<void> => {
+  setItem: async (key: string, value: string): Promise<void> => {
     if (typeof window === 'undefined') {
-      return Promise.resolve();
+      return;
     }
     if (Platform.OS === 'web') {
       try {
@@ -35,17 +51,24 @@ export const ExpoSecureStoreAdapter = {
       } catch {
         // no-op
       }
-      return Promise.resolve();
+      return;
     }
+    // Always persist full value in SQLite app_settings (no 2048-byte limit)
+    await setFallbackItem(key, value);
+    // Also persist in SecureStore when within the 2048-byte safe threshold
     try {
-      return SecureStore.setItemAsync(key, value);
+      if (value.length <= 2000) {
+        await SecureStore.setItemAsync(key, value);
+      } else {
+        await SecureStore.deleteItemAsync(key);
+      }
     } catch {
-      return Promise.resolve();
+      // SQLite fallback already succeeded
     }
   },
-  removeItem: (key: string): Promise<void> => {
+  removeItem: async (key: string): Promise<void> => {
     if (typeof window === 'undefined') {
-      return Promise.resolve();
+      return;
     }
     if (Platform.OS === 'web') {
       try {
@@ -55,12 +78,13 @@ export const ExpoSecureStoreAdapter = {
       } catch {
         // no-op
       }
-      return Promise.resolve();
+      return;
     }
+    await setFallbackItem(key, '');
     try {
-      return SecureStore.deleteItemAsync(key);
+      await SecureStore.deleteItemAsync(key);
     } catch {
-      return Promise.resolve();
+      // no-op
     }
   },
 };
@@ -85,4 +109,23 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
     detectSessionInUrl: false,
   },
 });
+
+/**
+ * Reads the persisted Supabase session JSON directly from local storage without
+ * triggering a network token refresh, returning the cached user id if available.
+ */
+export async function getCachedSupabaseSessionUserId(): Promise<string | null> {
+  if (isServer) return null;
+  try {
+    const host = new URL(supabaseUrl).hostname.split('.')[0];
+    if (!host) return null;
+    const raw = await ExpoSecureStoreAdapter.getItem(`sb-${host}-auth-token`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const userId = parsed?.user?.id || parsed?.currentSession?.user?.id;
+    return typeof userId === 'string' && userId.length > 0 ? userId : null;
+  } catch {
+    return null;
+  }
+}
 
